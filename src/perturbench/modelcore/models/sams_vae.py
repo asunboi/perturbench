@@ -1,19 +1,15 @@
-from typing import Tuple, Literal
+from typing import Tuple
 import torch
 import torch.distributions as dist
-from omegaconf import DictConfig
+import lightning as L
+import numpy as np
 
-from perturbench.data.transforms.base import Dispatch
 from perturbench.data.types import Batch
 from ..nn.vae import BaseEncoder
 from ..nn.mlp import gumbel_softmax_bernoulli
 from .base import PerturbationModel
 from ..nn.decoders import (
-    DeepGaussian,
     DeepIsotropicGaussian,
-    DeepPoisson,
-    DeepPoissonGamma,
-    ZeroInflatedPoissonGamma,
 )
 
 
@@ -51,11 +47,8 @@ class SparseAdditiveVAE(PerturbationModel):
 
     def __init__(
         self,
-        n_genes: int,
-        n_perts: int,
-        transform: Dispatch,
-        context: dict,
-        evaluation: DictConfig,
+        n_genes: int | None = None,
+        n_perts: int | None = None,
         n_layers_encoder_x: int = 2,
         n_layers_encoder_e: int = 2,
         n_layers_decoder: int = 3,
@@ -68,17 +61,16 @@ class SparseAdditiveVAE(PerturbationModel):
         mask_prior_probability: float = 0.01,
         lr: int | None = None,
         wd: int | None = None,
-        lr_scheduler: DictConfig | None = None,
+        lr_scheduler_freq: int | None = None,
+        lr_scheduler_interval: str | None = None,
+        lr_scheduler_patience: int | None = None,
+        lr_scheduler_factor: float | None = None,
         softplus_output: bool = True,
         generative_counterfactual: bool = False,
-        decoder_distribution: str = "IsotropicGaussian",
-        library_size: Literal["learned", "observed"] | None = None,
-        use_legacy_negative_binomial: bool = False,
-        count_based_input_expression: bool = False,
-        dispersion_by_gene_cell: bool = False,
         embedding_width: int | None = None,
         disable_sparsity: bool = False,
         disable_e_dist: bool = False,
+        datamodule: L.LightningDataModule | None = None,
     ) -> None:
         """
         Initializes the SparseAdditiveVAE model.
@@ -110,30 +102,20 @@ class SparseAdditiveVAE(PerturbationModel):
         Returns:
             None
         """
+        if datamodule is not None:
+            n_genes = datamodule.num_genes
+            n_perts = datamodule.num_perturbations
+        
         super(SparseAdditiveVAE, self).__init__(
-            n_genes=n_genes,
-            n_perts=n_perts,
-            transform=transform,
-            context=context,
-            evaluation=evaluation,
+            datamodule=datamodule,
             lr=lr,
             wd=wd,
-            lr_scheduler=lr_scheduler,
-            count_based_input_expression=count_based_input_expression,
-            embedding_width=embedding_width,
+            lr_scheduler_freq=lr_scheduler_freq,
+            lr_scheduler_interval=lr_scheduler_interval,
+            lr_scheduler_patience=lr_scheduler_patience,
+            lr_scheduler_factor=lr_scheduler_factor,
         )
-        self.save_hyperparameters()
-
-        if decoder_distribution in [dist.__name__ for dist in self.COUNT_DISTRIBUTIONS]:
-            if library_size is None:
-                raise ValueError(
-                    f"library_size must be set to 'learned' or 'observed' "
-                    f"if decoder_distribution is in {self.COUNT_DISTRIBUTIONS}"
-                )
-            elif library_size != "learned":
-                raise ValueError(
-                    "library_size must be set to 'learned' in the current sams-vae implementation "
-                )
+        self.save_hyperparameters(ignore=["datamodule"])
 
         if n_genes is not None:
             self.n_genes = n_genes
@@ -147,11 +129,23 @@ class SparseAdditiveVAE(PerturbationModel):
         self.mask_prior_probability = mask_prior_probability
         self.softplus_output = softplus_output
         self.generative_counterfactual = generative_counterfactual
-        self.perturbations_all_sum = torch.tensor(
-            context["perturbation_counts"].values,
-            device=self.device,
-            dtype=torch.float32,
-        )
+        
+        perturbations_all = datamodule.train_dataset.transform['perturbations'](list(datamodule.train_dataset.perturbations))
+        self.perturbations_all_sum = perturbations_all.sum(axis=0)
+
+        if self.inject_covariates_encoder or self.inject_covariates_decoder:
+            if datamodule is None or datamodule.train_context is None:
+                raise ValueError(
+                    "If inject_covariates is True, datamodule must be provided"
+                )
+            self.n_total_covariates = np.sum(
+                [
+                    len(unique_covs)
+                    for unique_covs in datamodule.train_context[
+                        "covariate_uniques"
+                    ].values()
+                ]
+            )
 
         encoder_input_dim = (
             self.n_genes + self.n_total_covariates
@@ -184,55 +178,14 @@ class SparseAdditiveVAE(PerturbationModel):
 
         self.m_logits = torch.nn.Parameter(-torch.ones((self.n_perts, self.latent_dim)))
 
-        if decoder_distribution == "Gaussian":
-            self.decoder = DeepGaussian(
-                decoder_input_dim, hidden_dim_x, self.n_genes, n_layers_decoder, dropout
-            )
-        elif decoder_distribution == "IsotropicGaussian":
-            self.decoder = DeepIsotropicGaussian(
-                decoder_input_dim,
-                hidden_dim_x,
-                self.n_genes,
-                n_layers_decoder,
-                dropout,
-                softplus_output,
-            )
-        elif decoder_distribution == "Poisson":
-            self.decoder = DeepPoisson(
-                decoder_input_dim,
-                hidden_dim_x,
-                self.n_genes,
-                n_layers_decoder,
-                dropout,
-                library_size,
-            )
-        elif decoder_distribution == "PoissonGamma":
-            self.decoder = DeepPoissonGamma(
-                decoder_input_dim,
-                hidden_dim_x,
-                self.n_genes,
-                n_layers_decoder,
-                dropout,
-                library_size,
-                use_legacy_negative_binomial,
-            )
-        elif decoder_distribution == "ZeroInflatedPoissonGamma":
-            self.decoder = ZeroInflatedPoissonGamma(
-                decoder_input_dim,
-                hidden_dim_x,
-                self.n_genes,
-                n_layers_decoder,
-                dropout,
-                library_size,
-                use_legacy_negative_binomial,
-                dispersion_by_gene_cell,
-            )
-        else:
-            raise ValueError(
-                "decoder_distribution must be one of 'Gaussian', 'IsotropicGaussian', 'Poisson', 'PoissonGamma', 'ZeroInflatedPoissonGamma'"
-            )
-
-        self.decoder_distribution = decoder_distribution
+        self.decoder = DeepIsotropicGaussian(
+            decoder_input_dim,
+            hidden_dim_x,
+            self.n_genes,
+            n_layers_decoder,
+            dropout,
+            softplus_output,
+        )
 
     def forward(
         self,

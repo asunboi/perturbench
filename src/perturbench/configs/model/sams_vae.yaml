@@ -14,7 +14,9 @@ inject_covariates_encoder: False
 inject_covariates_decoder: False
 mask_prior_probability: 0.01
 softplus_output: True
-
+disable_sparsity: false
+disable_e_dist: false
+generative_counterfactual: false
 
 ## Optimizer params
 lr: 8.184599223121104e-05

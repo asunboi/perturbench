@@ -45,23 +45,17 @@ from torch.distributions import Normal
 from torch.distributions.kl import kl_divergence as kl
 from torchmetrics.functional import accuracy
 from typing import Optional, Literal
-from omegaconf import DictConfig, OmegaConf
 import logging
+import lightning as L
 
 from ..nn.vae import VariationalEncoder
 from ..nn.decoders import (
-    DeepGaussian,
     DeepIsotropicGaussian,
-    DeepPoisson,
-    DeepPoissonGamma,
-    ZeroInflatedPoissonGamma,
 )
 from ..nn.mlp import MLP
 from perturbench.data.types import Batch
-from perturbench.data.transforms.base import Dispatch
 
 from .base import PerturbationModel
-from perturbench.modelcore.utils import instantiate_with_context
 
 log = logging.getLogger(__name__)
 
@@ -73,14 +67,10 @@ class CPA(PerturbationModel):
 
     def __init__(
         self,
-        n_genes: int,
-        n_perts: int,
-        transform: Dispatch,
-        context: dict,
-        evaluation: DictConfig,
-        embedding_width: int | None = None,
+        n_genes: int | None = None,
+        n_perts: int | None = None,
+        context: dict | None = None,
         n_latent: int = 128,
-        decoder_distribution: str = "IsotropicGaussian",
         library_size: Literal["learned", "observed"] | None = None,
         hidden_dim: int = 256,
         n_layers_encoder: int = 3,
@@ -91,7 +81,10 @@ class CPA(PerturbationModel):
         variational: bool = True,
         lr: float = 1e-3,
         wd: float = 1e-8,
-        lr_scheduler: DictConfig | None = None,
+        lr_scheduler_freq: int | None = None,
+        lr_scheduler_interval: str | None = None,
+        lr_scheduler_patience: int | None = None,
+        lr_scheduler_factor: float | None = None,
         kl_weight: float = 1.0,
         adv_weight: float = 1.0,
         dropout: float = 0.1,
@@ -102,9 +95,7 @@ class CPA(PerturbationModel):
         use_covariates: bool = True,
         softplus_output: bool = False,
         elementwise_affine: bool = False,
-        use_legacy_negative_binomial: bool = False,
-        count_based_input_expression: bool = False,
-        dispersion_by_gene_cell: bool = False,
+        datamodule: L.LightningDataModule | None = None,
     ):
         """The constructor for the CPA module class.
         Args:
@@ -136,36 +127,25 @@ class CPA(PerturbationModel):
             softplus_output: Whether to apply a softplus activation to the output.
             elementwise_affine: Whether to use elementwise affine in the layer norms
         """
+        if datamodule is not None:
+            n_genes = datamodule.num_genes
+            n_perts = datamodule.num_perturbations
+            context = datamodule.train_context
+        
         super(CPA, self).__init__(
-            n_genes=n_genes,
-            n_perts=n_perts,
-            transform=transform,
-            context=context,
-            evaluation=evaluation,
+            datamodule=datamodule,
             lr=lr,
             wd=wd,
-            lr_scheduler=lr_scheduler,
-            embedding_width=embedding_width,
+            lr_scheduler_freq=lr_scheduler_freq,
+            lr_scheduler_interval=lr_scheduler_interval,
+            lr_scheduler_patience=lr_scheduler_patience,
+            lr_scheduler_factor=lr_scheduler_factor,
         )
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["datamodule"])
         self.automatic_optimization = False
-
-        if decoder_distribution in [dist.__name__ for dist in self.COUNT_DISTRIBUTIONS]:
-            if library_size is None:
-                raise ValueError(
-                    f"library_size must be set to 'learned' or 'observed' "
-                    f"if decoder_distribution is in {self.COUNT_DISTRIBUTIONS}"
-                )
-            elif library_size == "learned":
-                log.warning(
-                    "library_size is set to 'learned' but in the current implementation "
-                    "it is not treated as a random variable"
-                )
-
         self.n_genes = n_genes
         self.n_perts = n_perts
         self.n_latent = n_latent
-        self.decoder_distribution = decoder_distribution
         self.variational = variational
         self.hidden_dim = hidden_dim
         self.n_layers_pert_emb = n_layers_pert_emb
@@ -184,9 +164,6 @@ class CPA(PerturbationModel):
         self.adv_loss_fn = nn.CrossEntropyLoss()
         self.use_adversary = use_adversary
         self.use_covariates = use_covariates
-        self.use_legacy_negative_binomial = use_legacy_negative_binomial
-        self.count_based_input_expression = count_based_input_expression
-        self.dispersion_by_gene_cell = dispersion_by_gene_cell
 
         self.encoder = VariationalEncoder(
             input_dim=self.n_input_features,
@@ -205,57 +182,14 @@ class CPA(PerturbationModel):
         else:
             self.covars_encoder = {}
 
-        if decoder_distribution == "Gaussian":
-            self.decoder = DeepGaussian(
-                self.n_latent,
-                self.hidden_dim,
-                self.n_genes,
-                self.n_layers_encoder,
-                self.dropout,
-            )
-        elif decoder_distribution == "IsotropicGaussian":
-            self.decoder = DeepIsotropicGaussian(
-                self.n_latent,
-                self.hidden_dim,
-                self.n_genes,
-                self.n_layers_encoder,
-                self.dropout,
-                self.softplus_output,
-            )
-        elif decoder_distribution == "Poisson":
-            self.decoder = DeepPoisson(
-                self.n_latent,
-                self.hidden_dim,
-                self.n_genes,
-                self.n_layers_encoder,
-                self.dropout,
-                self.library_size,
-            )
-        elif decoder_distribution == "PoissonGamma":
-            self.decoder = DeepPoissonGamma(
-                self.n_latent,
-                self.hidden_dim,
-                self.n_genes,
-                self.n_layers_encoder,
-                self.dropout,
-                self.library_size,
-                self.use_legacy_negative_binomial,
-            )
-        elif decoder_distribution == "ZeroInflatedPoissonGamma":
-            self.decoder = ZeroInflatedPoissonGamma(
-                self.n_latent,
-                self.hidden_dim,
-                self.n_genes,
-                self.n_layers_encoder,
-                self.dropout,
-                self.library_size,
-                self.use_legacy_negative_binomial,
-                self.dispersion_by_gene_cell,
-            )
-        else:
-            raise ValueError(
-                "decoder_distribution must be one of 'Gaussian', 'IsotropicGaussian', 'Poisson', 'PoissonGamma', 'ZeroInflatedPoissonGamma'"
-            )
+        self.decoder = DeepIsotropicGaussian(
+            self.n_latent,
+            self.hidden_dim,
+            self.n_genes,
+            self.n_layers_encoder,
+            self.dropout,
+            self.softplus_output,
+        )
 
         self.pert_network = MLP(
             input_dim=self.n_perts,
@@ -352,16 +286,6 @@ class CPA(PerturbationModel):
         if embeddings is not None:
             x_ = embeddings
             library = None
-        elif type(self.decoder) in self.COUNT_DISTRIBUTIONS:
-            library = (
-                x.sum(axis=-1).reshape(-1, 1)
-                if self.training or self.trainer.validating
-                else x.sum(axis=-1).reshape(-1, 1)
-            )
-            if self.embedding_width is None and self.count_based_input_expression:
-                # todo, check if normalization is necessary (check if scvi did that)
-                # control_input in theory can be embeddings
-                x_ = torch.log1p(x_)
         else:
             x_ = x
             library = None
@@ -374,10 +298,6 @@ class CPA(PerturbationModel):
         if self.variational and n_samples > 1:
             sampled_z = qz.sample((n_samples,))
             z_basal = self.encoder.z_transformation(sampled_z)
-            if type(self.decoder) in self.COUNT_DISTRIBUTIONS:
-                library = library.unsqueeze(0).expand(
-                    (n_samples, library.size(0), library.size(1))
-                )
 
         z_pert_true = self.pert_network(perts)  # perturbation encoder
         z_pert = z_pert_true
@@ -416,10 +336,7 @@ class CPA(PerturbationModel):
         z: torch.Tensor,
         library: torch.Tensor | None = None,
     ):
-        if type(self.decoder) in self.COUNT_DISTRIBUTIONS:
-            predictions = self.decoder(z, library)
-        else:
-            predictions = self.decoder(z)
+        predictions = self.decoder(z)
         return {
             "predictions": predictions,
             "pz": Normal(torch.zeros_like(z), torch.ones_like(z)),
@@ -706,30 +623,29 @@ class CPA(PerturbationModel):
             self.adversary_modules.parameters(), lr=self.lr, weight_decay=self.wd
         )
 
-        if self.lr_scheduler is not None:
-            scheduler_generative = instantiate_with_context(
-                self.lr_scheduler, context={"optimizer": optimizer_generative}
-            )
-            scheduler_adversary = instantiate_with_context(
-                self.lr_scheduler, context={"optimizer": optimizer_adversary}
-            )
-            lr_scheduler_generative = {
-                "scheduler": scheduler_generative,
-            }
-            lr_scheduler_adversary = {
-                "scheduler": scheduler_adversary,
-            }
-            if "extras" in self.lr_scheduler:
-                lr_scheduler_generative.update(
-                    OmegaConf.to_object(self.lr_scheduler.extras)
-                )
-                lr_scheduler_adversary.update(
-                    OmegaConf.to_object(self.lr_scheduler.extras)
-                )
-        else:
-            lr_scheduler_generative = {}
-            lr_scheduler_adversary = {}
-
+        scheduler_generative = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer_generative,
+            factor=self.lr_scheduler_factor,
+            patience=self.lr_scheduler_patience,
+        )
+        scheduler_adversary = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer_adversary,
+            factor=self.lr_scheduler_factor,
+            patience=self.lr_scheduler_patience,
+        )
+        lr_scheduler_generative = {
+            "scheduler": scheduler_generative,
+            "monitor": self.lr_monitor_key,
+            "frequency": self.lr_scheduler_freq,
+            "interval": self.lr_scheduler_interval,
+        }
+        lr_scheduler_adversary = {
+            "scheduler": scheduler_adversary,
+            "monitor": self.lr_monitor_key,
+            "frequency": self.lr_scheduler_freq,
+            "interval": self.lr_scheduler_interval,
+        }
+        
         return [
             {
                 "optimizer": optimizer_generative,
