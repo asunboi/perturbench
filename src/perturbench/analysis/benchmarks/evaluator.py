@@ -14,6 +14,7 @@ from perturbench.data.accessors.frangieh21 import Frangieh21
 from .evaluation import Evaluation
 import perturbench.data.datasplitter as datasplitter
 
+
 class Evaluator:
     """A class for benchmarking model predictions on a specific task."""
 
@@ -39,44 +40,38 @@ class Evaluator:
 
         if not os.path.exists(local_data_cache):
             os.makedirs(local_data_cache)
-            
+
         if task == "srivatsan20-transfer":
-            adata = Sciplex3(
-                data_cache_dir=local_data_cache
-            ).get_anndata()
-        
+            adata = Sciplex3(data_cache_dir=local_data_cache).get_anndata()
+
         elif task == "norman19-combo":
-            adata = Norman19(
-                data_cache_dir=local_data_cache
-            ).get_anndata()
-        
+            adata = Norman19(data_cache_dir=local_data_cache).get_anndata()
+
         elif task == "frangieh21-transfer":
-            adata = Frangieh21(
-                data_cache_dir=local_data_cache
-            ).get_anndata()
-        
+            adata = Frangieh21(data_cache_dir=local_data_cache).get_anndata()
+
         elif task == "mcfaline23-transfer":
             local_data_path = f"{local_data_cache}/mcfaline23_gxe_processed.h5ad"
             try:
-                adata = sc.read_h5ad(local_data_path, backed='r')
+                adata = sc.read_h5ad(local_data_path, backed="r")
             except FileNotFoundError:
                 raise NotImplementedError(
                     "Automatic McFaline23 dataset access not yet supported. Please run the \
                     notebooks in the notebooks/neurips2024/data_curation/ \
                         directory first to preprocess the data."
                 )
-        
+
         elif task == "jiang24-transfer":
             local_data_path = f"{local_data_cache}/jiang24_processed.h5ad"
             try:
-                adata = sc.read_h5ad(local_data_path, backed='r')
+                adata = sc.read_h5ad(local_data_path, backed="r")
             except FileNotFoundError:
                 raise NotImplementedError(
                     "Automatic Jiang24 dataset access not yet supported. Please run the notebooks in \
                     the notebooks/neurips2024/data_curation/ directory first to \
                         preprocess the data."
-            )
-        
+                )
+
         return adata
 
     @staticmethod
@@ -95,17 +90,18 @@ class Evaluator:
             data_override = ["data=jiang24"]
         else:
             raise ValueError(f"Task {task} is not supported.")
-        
-        with initialize_config_module(version_base="1.3", config_module="perturbench.configs"):
+
+        with initialize_config_module(
+            version_base="1.3", config_module="perturbench.configs"
+        ):
             cfg = compose(
                 config_name="train",
                 overrides=data_override + ["data.splitter.save=False"],
                 return_hydra_config=True,
             )
             HydraConfig.instance().set_config(cfg)
-        
-        return cfg.data
 
+        return cfg.data
 
     def __init__(
         self,
@@ -122,11 +118,11 @@ class Evaluator:
         """
         if task not in Evaluator.list_tasks():
             raise ValueError(f"Task {task} is not supported.")
-        
+
         # Load observed anndata object
         ref_adata = Evaluator.get_task_data(task, local_data_cache)
         task_config = Evaluator.get_task_config(task)
-        
+
         if split_value_to_evaluate is not None:
             split_dict = datasplitter.PerturbationDataSplitter.split_dataset(
                 splitter_config=task_config.splitter,
@@ -137,18 +133,16 @@ class Evaluator:
             )
             self.split_dict = split_dict
             ref_adata = ref_adata[split_dict[split_value_to_evaluate]].to_memory()
-            
+
         else:
             ref_adata = ref_adata.to_memory()
-        
+
         self.ref_adata = ref_adata
         self.task_config = task_config
 
-    
     def get_split(self):
         return self.split_dict
-    
-    
+
     def evaluate(
         self,
         model_predictions: dict[str, ad.AnnData],

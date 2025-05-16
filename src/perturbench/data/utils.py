@@ -50,9 +50,7 @@ def parse_perturbation_combinations(
 
     # Split the perturbations by the delimiter
     parsed = []
-    uniques = (
-        {}
-    )  ## Store unique perturbations as dictionary keys to ensure ordering is the same
+    uniques = {}  ## Store unique perturbations as dictionary keys to ensure ordering is the same
     for combination in combined_perturbations.astype(str):
         perturbation_list = []
         for perturbation in combination.split(delimiter):

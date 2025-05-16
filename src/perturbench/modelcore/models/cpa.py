@@ -1,7 +1,8 @@
 """
 BSD 3-Clause License
 
-Copyright (c) 2024, Mohammad Lotfollahi, Theislab
+Copyright (c) 2023, Mohammad Lotfollahi, Theislab
+All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
@@ -27,21 +28,42 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Used Theis lab latest code _module.py
+Removed CPA_REGISTRY_KEYS
+For now removed mix_up & disentanglement
+Simplified code so that the forward step consists of inference (encoder) and generative (decoder)
+Need to consider zinb, nb or gaussian
+Need to handle doses separately
+removed var_activation
+
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.distributions import Normal
 from torch.distributions.kl import kl_divergence as kl
 from torchmetrics.functional import accuracy
-from typing import Optional
-import lightning as L
+from typing import Optional, Literal
+from omegaconf import DictConfig, OmegaConf
+import logging
 
-from ..nn.vae import VariationalEncoder, VariationalDecoder
+from ..nn.vae import VariationalEncoder
+from ..nn.decoders import (
+    DeepGaussian,
+    DeepIsotropicGaussian,
+    DeepPoisson,
+    DeepPoissonGamma,
+    ZeroInflatedPoissonGamma,
+)
 from ..nn.mlp import MLP
 from perturbench.data.types import Batch
+from perturbench.data.transforms.base import Dispatch
+
 from .base import PerturbationModel
+from perturbench.modelcore.utils import instantiate_with_context
+
+log = logging.getLogger(__name__)
 
 
 class CPA(PerturbationModel):
@@ -51,10 +73,15 @@ class CPA(PerturbationModel):
 
     def __init__(
         self,
-        n_genes: int | None = None,
-        n_perts: int | None = None,
+        n_genes: int,
+        n_perts: int,
+        transform: Dispatch,
+        context: dict,
+        evaluation: DictConfig,
+        embedding_width: int | None = None,
         n_latent: int = 128,
-        recon_loss: str = "gauss",
+        decoder_distribution: str = "IsotropicGaussian",
+        library_size: Literal["learned", "observed"] | None = None,
         hidden_dim: int = 256,
         n_layers_encoder: int = 3,
         n_layers_pert_emb: int = 2,
@@ -62,25 +89,22 @@ class CPA(PerturbationModel):
         adv_classifier_hidden_dim: int = 128,
         adv_classifier_n_layers: int = 2,
         variational: bool = True,
-        ## TODO do we want to separate out optimizers, lr, wd etc. for adversary, autoencoder and dosers?
-        ## Alternatively, this can be achieved by balancing losses for different components and adding
-        ## an explicit loss term for regularization (instead of using weight decay).
         lr: float = 1e-3,
         wd: float = 1e-8,
-        lr_scheduler_freq: int | None = None,
-        lr_scheduler_interval: str | None = None,
-        lr_scheduler_patience: int | None = None,
-        lr_scheduler_factor: float | None = None,
+        lr_scheduler: DictConfig | None = None,
         kl_weight: float = 1.0,
         adv_weight: float = 1.0,
         dropout: float = 0.1,
         penalty_weight: float = 10.0,
-        datamodule: L.LightningDataModule | None = None,
         adv_steps: int = 7,
+        n_warmup_epochs: int = 5,
         use_adversary: bool = True,
         use_covariates: bool = True,
         softplus_output: bool = False,
         elementwise_affine: bool = False,
+        use_legacy_negative_binomial: bool = False,
+        count_based_input_expression: bool = False,
+        dispersion_by_gene_cell: bool = False,
     ):
         """The constructor for the CPA module class.
         Args:
@@ -88,7 +112,7 @@ class CPA(PerturbationModel):
             n_perts: Number of perturbations.
             drug_embeddings: Drug embeddings.
             n_latent: Number of latent variables.
-            recon_loss: Reconstruction loss type.
+            decoder_distribution: Distribution of the decoder.
             hidden_dim: Hidden dimension.
             n_layers_encoder: Number of encoder layers.
             n_layers_decoder: Number of decoder layers.
@@ -106,32 +130,42 @@ class CPA(PerturbationModel):
             penalty_weight: Penalty weight.
             datamodule: Data module.
             adv_steps: Number of adversarial steps.
+            n_warmup_epochs: Number of warmup epochs for the autoencoder
             use_adversary: Whether to use the adversarial component.
             use_covariates: Whether to use additive covariate conditioning.
             softplus_output: Whether to apply a softplus activation to the output.
             elementwise_affine: Whether to use elementwise affine in the layer norms
         """
         super(CPA, self).__init__(
-            datamodule=datamodule,
+            n_genes=n_genes,
+            n_perts=n_perts,
+            transform=transform,
+            context=context,
+            evaluation=evaluation,
             lr=lr,
             wd=wd,
-            lr_scheduler_freq=lr_scheduler_freq,
-            lr_scheduler_patience=lr_scheduler_patience,
-            lr_scheduler_factor=lr_scheduler_factor,
-            lr_scheduler_interval=lr_scheduler_interval,
+            lr_scheduler=lr_scheduler,
+            embedding_width=embedding_width,
         )
-        self.save_hyperparameters(ignore=["datamodule"])
+        self.save_hyperparameters()
+        self.automatic_optimization = False
 
-        recon_loss = recon_loss.lower()
-        assert recon_loss in ["gauss", "zinb", "nb"]
+        if decoder_distribution in [dist.__name__ for dist in self.COUNT_DISTRIBUTIONS]:
+            if library_size is None:
+                raise ValueError(
+                    f"library_size must be set to 'learned' or 'observed' "
+                    f"if decoder_distribution is in {self.COUNT_DISTRIBUTIONS}"
+                )
+            elif library_size == "learned":
+                log.warning(
+                    "library_size is set to 'learned' but in the current implementation "
+                    "it is not treated as a random variable"
+                )
 
-        if n_genes is not None:
-            self.n_genes = n_genes
-        if n_perts is not None:
-            self.n_perts = n_perts
-
+        self.n_genes = n_genes
+        self.n_perts = n_perts
         self.n_latent = n_latent
-        self.recon_loss = recon_loss
+        self.decoder_distribution = decoder_distribution
         self.variational = variational
         self.hidden_dim = hidden_dim
         self.n_layers_pert_emb = n_layers_pert_emb
@@ -144,11 +178,15 @@ class CPA(PerturbationModel):
         self.adv_classifier_n_layers = adv_classifier_n_layers
         self.dropout = dropout
         self.adv_steps = adv_steps
+        self.n_warmup_epochs = n_warmup_epochs
         self.softplus_output = softplus_output
         self.adv_loss_drugs = nn.CrossEntropyLoss()
         self.adv_loss_fn = nn.CrossEntropyLoss()
         self.use_adversary = use_adversary
         self.use_covariates = use_covariates
+        self.use_legacy_negative_binomial = use_legacy_negative_binomial
+        self.count_based_input_expression = count_based_input_expression
+        self.dispersion_by_gene_cell = dispersion_by_gene_cell
 
         self.encoder = VariationalEncoder(
             input_dim=self.n_input_features,
@@ -161,21 +199,63 @@ class CPA(PerturbationModel):
         if self.use_covariates:
             self.covars_encoder = {
                 covar: uniques
-                for covar, uniques in datamodule.train_context[
-                    "covariate_uniques"
-                ].items()
+                for covar, uniques in context["covariate_uniques"].items()
                 if len(uniques) > 1
             }
         else:
             self.covars_encoder = {}
 
-        self.decoder = VariationalDecoder(
-            output_dim=self.n_genes,
-            hidden_dim=self.hidden_dim,
-            latent_dim=self.n_latent,
-            n_layers=self.n_layers_encoder,  # ∞ For now set this to same as encoder (same as dropout and hidden dim)
-            dropout=self.dropout,
-        )
+        if decoder_distribution == "Gaussian":
+            self.decoder = DeepGaussian(
+                self.n_latent,
+                self.hidden_dim,
+                self.n_genes,
+                self.n_layers_encoder,
+                self.dropout,
+            )
+        elif decoder_distribution == "IsotropicGaussian":
+            self.decoder = DeepIsotropicGaussian(
+                self.n_latent,
+                self.hidden_dim,
+                self.n_genes,
+                self.n_layers_encoder,
+                self.dropout,
+                self.softplus_output,
+            )
+        elif decoder_distribution == "Poisson":
+            self.decoder = DeepPoisson(
+                self.n_latent,
+                self.hidden_dim,
+                self.n_genes,
+                self.n_layers_encoder,
+                self.dropout,
+                self.library_size,
+            )
+        elif decoder_distribution == "PoissonGamma":
+            self.decoder = DeepPoissonGamma(
+                self.n_latent,
+                self.hidden_dim,
+                self.n_genes,
+                self.n_layers_encoder,
+                self.dropout,
+                self.library_size,
+                self.use_legacy_negative_binomial,
+            )
+        elif decoder_distribution == "ZeroInflatedPoissonGamma":
+            self.decoder = ZeroInflatedPoissonGamma(
+                self.n_latent,
+                self.hidden_dim,
+                self.n_genes,
+                self.n_layers_encoder,
+                self.dropout,
+                self.library_size,
+                self.use_legacy_negative_binomial,
+                self.dispersion_by_gene_cell,
+            )
+        else:
+            raise ValueError(
+                "decoder_distribution must be one of 'Gaussian', 'IsotropicGaussian', 'Poisson', 'PoissonGamma', 'ZeroInflatedPoissonGamma'"
+            )
 
         self.pert_network = MLP(
             input_dim=self.n_perts,
@@ -229,6 +309,20 @@ class CPA(PerturbationModel):
             self.covars_embeddings = None
             self.covars_adversary_classifiers = None
 
+        self.generative_modules = nn.ModuleList(
+            [self.encoder, self.decoder, self.pert_network, self.covars_embeddings]
+        )
+        self.adversary_modules = nn.ModuleList(
+            [self.perturbation_adversary_classifier, self.covars_adversary_classifiers]
+        )
+
+    @property
+    def start_adv_training(self):
+        if self.n_warmup_epochs:
+            return self.current_epoch > self.n_warmup_epochs
+        else:
+            return True
+
     def unpack_batch(self, batch: Batch):
         if batch.embeddings is not None:
             embeddings = batch.embeddings.squeeze()
@@ -257,14 +351,20 @@ class CPA(PerturbationModel):
     ):
         if embeddings is not None:
             x_ = embeddings
-            library = None, None
-        elif self.recon_loss in ["nb", "zinb"]:
-            # log the input to the variational distribution for numerical stability
-            x_ = torch.log(1 + x)
-            library = torch.log(x.sum(1)).unsqueeze(1)
+            library = None
+        elif type(self.decoder) in self.COUNT_DISTRIBUTIONS:
+            library = (
+                x.sum(axis=-1).reshape(-1, 1)
+                if self.training or self.trainer.validating
+                else x.sum(axis=-1).reshape(-1, 1)
+            )
+            if self.embedding_width is None and self.count_based_input_expression:
+                # todo, check if normalization is necessary (check if scvi did that)
+                # control_input in theory can be embeddings
+                x_ = torch.log1p(x_)
         else:
             x_ = x
-            library = None, None
+            library = None
 
         if self.variational:
             qz, z_basal = self.encoder(x_)
@@ -274,7 +374,7 @@ class CPA(PerturbationModel):
         if self.variational and n_samples > 1:
             sampled_z = qz.sample((n_samples,))
             z_basal = self.encoder.z_transformation(sampled_z)
-            if self.recon_loss in ["nb", "zinb"]:
+            if type(self.decoder) in self.COUNT_DISTRIBUTIONS:
                 library = library.unsqueeze(0).expand(
                     (n_samples, library.size(0), library.size(1))
                 )
@@ -314,13 +414,16 @@ class CPA(PerturbationModel):
     def generative(
         self,
         z: torch.Tensor,
+        library: torch.Tensor | None = None,
     ):
-        px_mean, px_var = self.decoder(z)
-        if self.softplus_output:
-            px_mean = F.softplus(px_mean)
-        px = Normal(loc=px_mean, scale=px_var.sqrt())
-        pz = Normal(torch.zeros_like(z), torch.ones_like(z))
-        return dict(px=px, pz=pz)
+        if type(self.decoder) in self.COUNT_DISTRIBUTIONS:
+            predictions = self.decoder(z, library)
+        else:
+            predictions = self.decoder(z)
+        return {
+            "predictions": predictions,
+            "pz": Normal(torch.zeros_like(z), torch.ones_like(z)),
+        }
 
     def loss(
         self,
@@ -332,8 +435,9 @@ class CPA(PerturbationModel):
         batch_idx: int,
     ):
         """Computes the reconstruction loss (AE) or the ELBO (VAE)"""
-        px = generative_outputs["px"]
-        recon_loss = -px.log_prob(x).sum(dim=-1).mean()
+        recon_loss = self.decoder.reconstruction_loss(
+            generative_outputs["predictions"], x
+        )
 
         if self.variational:
             qz = inference_outputs["qz"]
@@ -361,11 +465,9 @@ class CPA(PerturbationModel):
 
         total_loss = (
             recon_loss
-            + kl_loss * self.kl_weight
-            + self.adv_weight * adv_loss["adv_loss"]
+            + self.kl_weight * kl_loss
+            - self.adv_weight * adv_loss["adv_loss"]
         )
-        if batch_idx % self.adv_steps != 0:
-            total_loss += self.penalty_weight * adv_loss["penalty_adv"]
 
         return {
             "total_loss": total_loss,
@@ -519,10 +621,14 @@ class CPA(PerturbationModel):
         embeddings, x, perts, covars_dict = self.unpack_batch(batch).values()
         inference_outputs = self.inference(x, perts, covars_dict, embeddings)
 
-        generative_outputs = self.generative(inference_outputs["z"])
+        generative_outputs = self.generative(
+            inference_outputs["z"], inference_outputs["library"]
+        )
         return inference_outputs, generative_outputs
 
     def training_step(self, batch: Batch, batch_idx: int):
+        optimizer_generative, optimizer_adversary = self.optimizers()
+
         inference_outputs, generative_outputs = self.forward(batch)
         losses = self.loss(
             batch.gene_expression,
@@ -532,6 +638,36 @@ class CPA(PerturbationModel):
             generative_outputs,
             batch_idx,
         )
+
+        total_loss = losses["total_loss"]
+        adv_loss = (
+            self.adv_weight * losses["adv_loss"]
+            + self.penalty_weight * losses["penalty_adv"]
+        )
+
+        if self.start_adv_training:
+            if batch_idx % self.adv_steps == 0:
+                self.toggle_optimizer(optimizer_generative)
+                optimizer_generative.zero_grad()
+                self.manual_backward(total_loss)
+                optimizer_generative.step()
+                self.untoggle_optimizer(optimizer_generative)
+
+            else:
+                self.toggle_optimizer(optimizer_adversary)
+                optimizer_adversary.zero_grad()
+                self.manual_backward(adv_loss)
+                optimizer_adversary.step()
+                self.untoggle_optimizer(optimizer_adversary)
+
+        else:
+            gen_loss = losses["recon_loss"] + self.kl_weight * losses["kl_loss"]
+            self.toggle_optimizer(optimizer_generative)
+            optimizer_generative.zero_grad()
+            self.manual_backward(gen_loss)
+            optimizer_generative.step()
+            self.untoggle_optimizer(optimizer_generative)
+
         if self.training:
             for key, value in losses.items():
                 self.log(
@@ -541,13 +677,63 @@ class CPA(PerturbationModel):
                     logger=True,
                     batch_size=len(batch),
                 )
-        return losses["total_loss"]
 
     def validation_step(self, batch: Batch, batch_idx: int):
-        loss = self.training_step(batch, batch_idx)
-        self.log("val_loss", loss, prog_bar=True, logger=True, batch_size=len(batch))
-        return loss
+        inference_outputs, generative_outputs = self.forward(batch)
+        losses = self.loss(
+            batch.gene_expression,
+            batch.perturbations,
+            batch.covariates,
+            inference_outputs,
+            generative_outputs,
+            batch_idx,
+        )
+        total_loss = losses["total_loss"]
+        self.log(
+            "val_loss", total_loss, prog_bar=True, logger=True, batch_size=len(batch)
+        )
+        return total_loss
 
     def predict(self, batch: Batch):
-        _, generative_distributions = self.forward(batch)
-        return generative_distributions["px"].mean
+        _, generative_outputs = self.forward(batch)
+        return generative_outputs["predictions"]
+
+    def configure_optimizers(self):
+        optimizer_generative = torch.optim.Adam(
+            self.generative_modules.parameters(), lr=self.lr, weight_decay=self.wd
+        )
+        optimizer_adversary = torch.optim.Adam(
+            self.adversary_modules.parameters(), lr=self.lr, weight_decay=self.wd
+        )
+
+        if self.lr_scheduler is not None:
+            scheduler_generative = instantiate_with_context(
+                self.lr_scheduler, context={"optimizer": optimizer_generative}
+            )
+            scheduler_adversary = instantiate_with_context(
+                self.lr_scheduler, context={"optimizer": optimizer_adversary}
+            )
+            lr_scheduler_generative = {
+                "scheduler": scheduler_generative,
+            }
+            lr_scheduler_adversary = {
+                "scheduler": scheduler_adversary,
+            }
+            if "extras" in self.lr_scheduler:
+                lr_scheduler_generative.update(
+                    OmegaConf.to_object(self.lr_scheduler.extras)
+                )
+                lr_scheduler_adversary.update(
+                    OmegaConf.to_object(self.lr_scheduler.extras)
+                )
+        else:
+            lr_scheduler_generative = {}
+            lr_scheduler_adversary = {}
+
+        return [
+            {
+                "optimizer": optimizer_generative,
+                "lr_scheduler": lr_scheduler_generative,
+            },
+            {"optimizer": optimizer_adversary, "lr_scheduler": lr_scheduler_adversary},
+        ]

@@ -138,7 +138,6 @@ class BiolordStar(PerturbationModel):
         perturbation: torch.Tensor,
         covariates: dict[str, torch.Tensor],
     ):
-
         latent_observed_perturbed_expression = self.gene_encoder(
             observed_perturbed_expression
         )

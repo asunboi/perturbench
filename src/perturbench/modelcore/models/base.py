@@ -81,7 +81,6 @@ class PerturbationModel(L.LightningModule, ABC):
         lr_scheduler_factor: float | None = None,
         lr_monitor_key: str | None = None,
     ):
-
         super(PerturbationModel, self).__init__()
 
         self.lr = 1e-3 if lr is None else lr

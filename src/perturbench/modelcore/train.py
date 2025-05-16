@@ -13,7 +13,6 @@ log = logging.getLogger(__name__)
 
 
 def train(runtime_context: dict):
-
     cfg = runtime_context["cfg"]
 
     # Set seed for random number generators in pytorch, numpy and python.random
@@ -73,7 +72,6 @@ def train(runtime_context: dict):
 
 @hydra.main(version_base="1.3", config_path="../configs", config_name="train.yaml")
 def main(cfg: DictConfig) -> float | None:
-
     runtime_context = {"cfg": cfg, "trial_number": HydraConfig.get().job.get("num")}
 
     ## Train the model

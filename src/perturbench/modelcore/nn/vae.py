@@ -3,38 +3,33 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
 from typing import Tuple
-from .mlp import MLP
+from .mlp import MLP, ResMLP
 
 
 class LogisticRegression(nn.Module):
     def __init__(self, input_dim: int) -> None:
         super(LogisticRegression, self).__init__()
 
-        self.weights = nn.Parameter(torch.zeros(input_dim))
-        self.biases = nn.Parameter(torch.zeros(input_dim))
+        self.weights = nn.Parameter(torch.ones(input_dim))
+        self.biases = nn.Parameter(-torch.ones(input_dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-
-        x = self.weights * x + self.biases
-        # outputs = torch.sigmoid(x)
-
+        # x = self.weights * x + self.biases
         return x
 
 
 class ConditionalGaussian(nn.Module):
     def __init__(self, condition_dim: int) -> None:
         super(ConditionalGaussian, self).__init__()
-        self.mu_layer_true = nn.Parameter(torch.zeros(condition_dim))
-        self.mu_layer_false = nn.Parameter(torch.zeros(condition_dim))
+        self.mu_layer_true = nn.Parameter(torch.ones(condition_dim) / 10)
+        self.mu_layer_false = nn.Parameter(-torch.ones(condition_dim) / 10)
         self.scale_true = nn.Parameter(torch.ones(condition_dim))
         self.scale_false = nn.Parameter(torch.ones(condition_dim))
 
     def forward(self, condition) -> Tuple[torch.Tensor, torch.Tensor]:
-
         mu = condition * self.mu_layer_true + (1 - condition) * self.mu_layer_false
         scale = condition * self.scale_true + (1 - condition) * self.scale_false
         # dist = Normal(mu, torch.exp(0.5 * scale)) #F.softplus(scale).clip(min=1e-3)
-
         return mu, scale
 
 
@@ -63,8 +58,39 @@ class BaseEncoder(nn.Module):
         self,
         x: torch.Tensor,
     ) -> torch.Tensor:
-
         x = self.mlp(x)
+        z_mu = self.mu_x(x)
+        z_log_var = self.var_x(x)
+
+        return z_mu, z_log_var
+
+
+class ResidualBaseEncoder(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        latent_dim: int,
+        n_layers: int = 2,
+    ) -> None:
+        """
+        BaseEncoder for perturbation model.
+        """
+
+        super(ResidualBaseEncoder, self).__init__()
+
+        self.mlp = MLP(
+            input_dim, hidden_dim=hidden_dim, output_dim=input_dim, n_layers=n_layers
+        )
+
+        self.mu_x = nn.Linear(input_dim, latent_dim)
+        self.var_x = nn.Linear(input_dim, latent_dim)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        x = self.mlp(x) + x
         z_mu = self.mu_x(x)
         z_log_var = self.var_x(x)
 
@@ -105,7 +131,6 @@ class PerturbationConditionalEncoder(nn.Module):
         self.var_x = nn.Linear(hidden_dim_x, output_dim)
 
     def forward(self, x: torch.Tensor, condition: torch.tensor) -> torch.Tensor:
-
         x = self.expression_mlp(x)
         condition = self.condition_mlp(condition)
         x = x + condition
@@ -125,6 +150,7 @@ class ResidualPerturbationConditionalEncoder(nn.Module):
         condition_dim: int,
         hidden_dim_x: int,
         hidden_dim_cond: int,
+        output_dim: int,
         n_layers: int = 2,
     ) -> None:
         """
@@ -134,7 +160,7 @@ class ResidualPerturbationConditionalEncoder(nn.Module):
 
         super(ResidualPerturbationConditionalEncoder, self).__init__()
 
-        self.expression_mlp = MLP(
+        self.expression_mlp = ResMLP(
             input_dim=input_dim,
             hidden_dim=hidden_dim_x,
             output_dim=hidden_dim_x,
@@ -147,11 +173,10 @@ class ResidualPerturbationConditionalEncoder(nn.Module):
             n_layers=n_layers,
         )
 
-        self.mu_x = nn.Linear(hidden_dim_x, input_dim)
-        self.var_x = nn.Linear(hidden_dim_x, input_dim)
+        self.mu_x = nn.Linear(hidden_dim_x, output_dim)
+        self.var_x = nn.Linear(hidden_dim_x, output_dim)
 
     def forward(self, x: torch.Tensor, condition: torch.tensor) -> torch.Tensor:
-
         z = self.expression_mlp(x)
         condition = self.condition_mlp(condition)
         z = z + condition
@@ -198,7 +223,6 @@ class PerturbationSplitEncoder(nn.Module):
         self.var_x = nn.Linear(hidden_dim_x, output_dim - condition_dim)
 
     def forward(self, x: torch.Tensor, condition: torch.tensor) -> torch.Tensor:
-
         # expression features only block (for basal state)
         x = self.expression_mlp(x)
         z_mu = self.mu_x(x)
@@ -253,7 +277,6 @@ class VariationalEncoder(nn.Module):
         self,
         x: torch.Tensor,
     ) -> torch.Tensor:
-
         x = self.network(x)
 
         z_mu = self.mu_x(x)
@@ -298,7 +321,6 @@ class VariationalDecoder(nn.Module):
         self,
         z: torch.Tensor,
     ) -> torch.Tensor:
-
         z = self.network(z)
 
         x_mu = self.mu_z(z)

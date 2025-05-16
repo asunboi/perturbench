@@ -336,9 +336,7 @@ class PerturbationDataSplitter:
             "train_control_fraction": train_control_fraction,
         }
 
-        max_heldout_dict = (
-            {}
-        )  ## Maximum number of perturbations that can be held out for each unique set of covariates
+        max_heldout_dict = {}  ## Maximum number of perturbations that can be held out for each unique set of covariates
         for cov_keys, df in self.obs_dataframe.groupby(self.covariate_keys):
             num_cov_perts = df[self.perturbation_key].nunique()
             max_heldout_dict[frozenset(cov_keys)] = min(
@@ -346,9 +344,7 @@ class PerturbationDataSplitter:
                 max_heldout_perturbations_per_covariate,
             )
 
-        perturbation_covariates_dict = (
-            {}
-        )  ## Dictionary to store unique covariates for each perturbation
+        perturbation_covariates_dict = {}  ## Dictionary to store unique covariates for each perturbation
         for pert_key, df in self.obs_dataframe.groupby([self.perturbation_key]):
             pert_key = pert_key[0]
             if pert_key != self.perturbation_control_value:
@@ -465,8 +461,7 @@ class PerturbationDataSplitter:
         split = self.obs_dataframe[split_key]
 
         return split
-    
-    
+
     def split_covariates_manual(
         self,
         covariates_holdout: list[frozenset[str]],
@@ -476,60 +471,71 @@ class PerturbationDataSplitter:
         train_control_fraction: float = 0.5,
         test_fraction: float = 0.5,
     ):
-        """Holds out perturbations in specific covariates to test the ability 
+        """Holds out perturbations in specific covariates to test the ability
            of a model to transfer perturbation effects to new covariates.
-        
+
         Args
             covariates_holdout: List of covariates to hold out. Each unique set
               of covariates should be a tuple/list/set of strings.
             print_split: Whether to print the split summary
             seed: Random seed for reproducibility
-            max_heldout_fraction_per_cov: Maximum fraction of perturbations to 
+            max_heldout_fraction_per_cov: Maximum fraction of perturbations to
               hold out for each unique set of covariates
             test_fraction: Fraction of held out perturbations to include in the test
               vs val set
-            train_control_fraction: Fraction of control cells to include in the 
+            train_control_fraction: Fraction of control cells to include in the
               training set
-        
+
         Returns
             split: Split of the data into train/val/test as a pd.Series
         """
         covariates_holdout = [frozenset(x) for x in covariates_holdout]
-        
-        split_key = "transfer_split_seed" + str(seed) ## Unique key for this split
+
+        split_key = "transfer_split_seed" + str(seed)  ## Unique key for this split
         self.split_params[split_key] = {
-            'covariates_holdout': covariates_holdout,
-            'max_heldout_fraction_per_cov': max_heldout_fraction_per_covariate,
-            'train_control_fraction': train_control_fraction,
+            "covariates_holdout": covariates_holdout,
+            "max_heldout_fraction_per_cov": max_heldout_fraction_per_covariate,
+            "train_control_fraction": train_control_fraction,
         }
-        
+
         rng = np.random.RandomState(seed)
         seed_list = [rng.randint(100000) for i in range(0, len(covariates_holdout))]
-        
+
         train_perturbation_covariates = []
         heldout_perturbation_covariates = []
-        for covs,df in self.obs_dataframe.groupby(self.covariate_keys):
+        for covs, df in self.obs_dataframe.groupby(self.covariate_keys):
             covs = frozenset(covs)
-            covs_perts = [x for x in df[self.perturbation_key].unique() if x != self.perturbation_control_value]
-            
+            covs_perts = [
+                x
+                for x in df[self.perturbation_key].unique()
+                if x != self.perturbation_control_value
+            ]
+
             if covs in covariates_holdout:
                 random.seed(seed_list[covariates_holdout.index(covs)])
-                heldout_perts = random.sample(covs_perts, int(max_heldout_fraction_per_covariate*len(covs_perts)))
+                heldout_perts = random.sample(
+                    covs_perts,
+                    int(max_heldout_fraction_per_covariate * len(covs_perts)),
+                )
             else:
                 heldout_perts = []
-            
+
             heldout_perturbation_covariates.extend(
                 [(perturbation, covs) for perturbation in heldout_perts]
             )
             train_perturbation_covariates.extend(
-                [(perturbation, covs) for perturbation in covs_perts if perturbation not in heldout_perts]
+                [
+                    (perturbation, covs)
+                    for perturbation in covs_perts
+                    if perturbation not in heldout_perts
+                ]
             )
-        
+
         ## Split held out perturbation/covariate pairs into val and test sets
         self._assign_split(
             seed,
-            train_perturbation_covariates, 
-            heldout_perturbation_covariates, 
+            train_perturbation_covariates,
+            heldout_perturbation_covariates,
             split_key,
             test_fraction=test_fraction,
         )
@@ -541,12 +547,11 @@ class PerturbationDataSplitter:
         split_summary_df = self._summarize_split(split_key)
         self.summary_dataframes[split_key] = split_summary_df
         if print_split:
-            print('Split summary: ')
+            print("Split summary: ")
             print(split_summary_df)
-        
+
         split = self.obs_dataframe[split_key]
         return split
-    
 
     def split_combinations(
         self,
