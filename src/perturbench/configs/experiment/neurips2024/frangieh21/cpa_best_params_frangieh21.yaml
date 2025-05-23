@@ -10,26 +10,24 @@ trainer:
   min_epochs: 5
 
 model:
-  adv_classifier_hidden_dim: 400
-  adv_classifier_n_layers: 1
-  adv_steps: 3
-  adv_weight: 0.9296158019122399
-  dropout: 0.2
+  adv_classifier_hidden_dim: 559
+  adv_classifier_n_layers: 4
+  adv_steps: 5
+  adv_weight: 0.1853767280161523
+  dropout: 0.1
   elementwise_affine: false
   hidden_dim: 4352
-  kl_weight: 9.393160502194625
-  lr: 1.639623277694398e-05
-  n_genes: null
-  n_latent: 256
+  kl_weight: 0.21855673778824847
+  lr: 3.680992074544368e-05
+  n_latent: 128
   n_layers_covar_emb: 1
   n_layers_encoder: 1
-  n_layers_pert_emb: 3
-  n_perts: null
-  penalty_weight: 3.3843905030378734
-  recon_loss: gauss
+  n_layers_pert_emb: 1
+  n_warmup_epochs: 20
+  penalty_weight: 7.605167161204701
   softplus_output: false
   variational: true
-  wd: 1.9041225518254116e-07
+  wd: 1.9023489520016998e-05
 
 data:
   add_controls: false

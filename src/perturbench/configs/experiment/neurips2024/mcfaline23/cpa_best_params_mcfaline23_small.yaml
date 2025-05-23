@@ -25,17 +25,22 @@ data:
     split_path: ${paths.data_dir}/mcfaline23_gxe_splits/small_covariate_split.csv
 
 model:
-  adv_classifier_hidden_dim: 365
+  adv_classifier_hidden_dim: 446
   adv_classifier_n_layers: 3
-  adv_steps: 5
-  adv_weight: 18.30837546453668
-  dropout: 0.7000000000000001
-  hidden_dim: 5376
-  kl_weight: 0.282925401984325
-  lr: 0.00015444461968485942
-  n_latent: 128
-  n_layers_encoder: 1
-  n_layers_pert_emb: 4
-  penalty_weight: 0.2211831894078093
-  wd: 0.0009633130188863505
+  adv_steps: 3
+  adv_weight: 6.657453598080865
+  dropout: 0.1
+  elementwise_affine: false
+  hidden_dim: 2304
+  kl_weight: 1.1791506221938572
+  lr: 1.9312841187693903e-05
+  n_latent: 256
+  n_layers_covar_emb: 1
+  n_layers_encoder: 7
+  n_layers_pert_emb: 3
+  n_warmup_epochs: 10
+  penalty_weight: 9.392286981965224
+  softplus_output: false
+  variational: true
+  wd: 1.9552773792043903e-08
 

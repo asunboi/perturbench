@@ -24,16 +24,21 @@ data:
   add_controls: False
 
 model:
-  adv_classifier_hidden_dim: 191
-  adv_classifier_n_layers: 4
-  adv_steps: 2
-  adv_weight: 12.693058722845064
-  dropout: 0.7000000000000001
+  adv_classifier_hidden_dim: 837
+  adv_classifier_n_layers: 2
+  adv_steps: 3
+  adv_weight: 0.12619384778246517
+  dropout: 0.6000000000000001
+  elementwise_affine: false
   hidden_dim: 5376
-  kl_weight: 8.771797113187239
-  lr: 0.0007070922542027537
-  n_latent: 512
+  kl_weight: 11.931005035532673
+  lr: 0.0005134219006570818
+  n_latent: 256
+  n_layers_covar_emb: 1
   n_layers_encoder: 1
-  n_layers_pert_emb: 2
-  penalty_weight: 0.6523914220771411
-  wd: 0.00041111769940547604
+  n_layers_pert_emb: 1
+  n_warmup_epochs: 10
+  penalty_weight: 0.9962990820647598
+  softplus_output: false
+  variational: true
+  wd: 6.849486237372675e-05

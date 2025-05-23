@@ -28,9 +28,7 @@ for command line extras such as the `rich` package, which gives you neater progr
 ## Downloading and Preparing Datasets
 
 ### Dataset Access
-To reproduce the datasets used for benchmarking, first create a local cache directory (i.e. `~/perturbench_data`) and set the `data_cache_dir` variable in the curation notebooks in `notebooks/neurips2024/data_curation` to the cache you created. Please also set the `data_dir` variable in `src/configs/paths/default.yaml` to the correct data cache path as well.
-
-Once you've set the correct local cache paths, please run the curation notebooks and scripts which will download the datasets, curate the metadata, and run standard scRNA-seq preprocessing with scanpy. Note that the McFalineFigueroa23 and Jiang24 data curation requires two steps as the downloaded files are Seurat objects and need to be converted to anndata h5ad files.
+For convenience, we've uploaded all processed datasets as gzipped h5ad files to Hugging Face at: https://huggingface.co/datasets/altoslabs/perturbench/tree/main.
 
 We also provide accessor functions to automatically download and cache the Srivatsan20, Norman19, and Frangieh21 datasets as either [AnnData objects](https://anndata.readthedocs.io/en/latest/) or a [PyTorch Datasets](https://pytorch.org/tutorials/beginner/basics/data_tutorial.html).
 ```
@@ -40,6 +38,10 @@ srivatsan20_accessor = Sciplex3()
 adata = srivatsan20_accessor.get_anndata() ## Get the preprocessed anndata object
 torch_dataset = srivatsan20_accessor.get_dataset() ## Get a PyTorch Dataset
 ```
+
+To reproduce the curation and preprocessing steps used to generate these datasets, first create a local cache directory (i.e. `~/perturbench_data`) and set the `data_cache_dir` variable in the curation notebooks in `notebooks/neurips2024/data_curation` to the cache you created. Please also set the `data_dir` variable in `src/configs/paths/default.yaml` to the correct data cache path as well.
+
+Once you've set the correct local cache paths, please run the curation notebooks and scripts which will download the datasets, curate the metadata, and run standard scRNA-seq preprocessing with scanpy. Note that the McFalineFigueroa23 and Jiang24 data curation requires two steps as the downloaded files are Seurat objects and need to be converted to anndata h5ad files.
 
 ### Data Splitting
 The Frangieh21 and Jiang24 datasets require manual splits that can be generated using the `notebooks/build_jiang24_frangieh21_splits.ipynb` notebook. For the McFalineFigueroa23 data scaling experiments and the Srivatsan20 imbalance experiments, you can generate the custom splits using the `notebooks/build_data_scaling_splits.ipynb` and `notebooks/build_imbalance_splits.ipynb` notebooks respectively.

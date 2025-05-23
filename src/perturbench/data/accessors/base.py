@@ -29,19 +29,41 @@ def download_scperturb_adata(data_url, data_cache_dir, filename):
     return adata
 
 
+def download_file(url: str, output_dir: str, output_filename: str) -> None:
+    """
+    Downloads a file from a URL to the specified output path using wget.
+    
+    Args:
+        url (str): The URL of the file to download
+        output_path (str): The local path where the file should be saved
+    """
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    output_path = f"{output_dir}/{output_filename}"
+    sp.call(f"wget {url} -O {output_path}", shell=True)
+    
+    if ".gz" in output_filename:
+        sp.call(f"gzip -d {output_path}", shell=True)
+    
+    return output_path.replace(".gz", "")    
+
+
 class Accessor:
     data_cache_dir: str
-    dataset_url: str
+    dataset_hf_url: str
+    dataset_orig_url: str
     dataset_name: str
     processed_data_path: str
 
     def __init__(
         self,
-        dataset_url,
+        dataset_hf_url,
+        dataset_orig_url,
         dataset_name,
         data_cache_dir="../perturbench_data",
     ):
-        self.dataset_url = dataset_url
+        self.dataset_hf_url = dataset_hf_url
+        self.dataset_orig_url = dataset_orig_url
         self.dataset_name = dataset_name
         self.data_cache_dir = data_cache_dir
 
