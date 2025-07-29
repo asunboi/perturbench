@@ -114,7 +114,7 @@ def rank_helper(pred_ref_mat, metric_type):
 
         rel_ranks.loc[p] = np.where(pred_metrics.index == p)[0][0]
 
-    rel_ranks = rel_ranks / len(rel_ranks)
+    rel_ranks = rel_ranks / (len(rel_ranks) - 1)
     return rel_ranks
 
 
