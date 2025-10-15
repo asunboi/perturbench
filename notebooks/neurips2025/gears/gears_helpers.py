@@ -6,7 +6,7 @@ import torch
 import optuna
 
 from gears import PertData, GEARS
-from analysis.benchmarks.evaluation import Evaluation
+from perturbench.analysis.benchmarks.evaluation import Evaluation
 
 
 class GEARSHParamsRange:
@@ -38,9 +38,9 @@ class GEARSHParamsRange:
 
 
 def run_gears(
-    pert_data_path: str = "/weka/prime-shared/prime-data/gears/",
+    pert_data_path: str = "../perturbench_data/gears/",
     dataset_name: str = "norman19",
-    split_dict_path: str = "/weka/prime-shared/prime-data/gears/norman19_gears_split.pkl",
+    split_dict_path: str = "../perturbench_data/gears/norman19_gears_split.pkl",
     eval_split: str = "val",
     batch_size: str = 32,
     epochs: int = 10,

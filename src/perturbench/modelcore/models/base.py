@@ -256,11 +256,19 @@ class PerturbationModel(L.LightningModule, ABC):
 
             if eval_dict.get("rank"):
                 ev.evaluate_pairwise(aggr_method=aggr, metric=metric)
-                ev.evaluate_rank(aggr_method=aggr, metric=metric)
+                ev.evaluate_rank(
+                    aggr_method=aggr,
+                    metric=metric,
+                    transpose=eval_dict.get("rank_transpose", False),
+                )
 
                 rank_df = ev.rank_evals[aggr][metric].copy()
                 avg_rank = rank_df.groupby("model").mean("rank")
                 summary_metrics_dict[metric + "_rank_" + aggr] = avg_rank["rank"]
+                
+                if eval_dict.get("rank_transpose"):
+                    avg_rank_transpose = rank_df.groupby("model").mean("rank_transpose")
+                    summary_metrics_dict[metric + "_rank_transpose_" + aggr] = avg_rank_transpose["rank_transpose"]
 
         summary_metrics = pd.DataFrame(summary_metrics_dict).T.applymap(
             lambda x: float(
