@@ -5,7 +5,6 @@ import anndata as ad
 
 from typing import Dict, List
 from omegaconf import DictConfig
-import hydra
 from hydra import initialize_config_module, compose
 from hydra.core.hydra_config import HydraConfig
 
