@@ -9,12 +9,12 @@ import hydra
 from hydra import initialize_config_module, compose
 from hydra.core.hydra_config import HydraConfig
 
-from data.accessors.srivatsan20 import Sciplex3
-from data.accessors.norman19 import Norman19
-from data.accessors.frangieh21 import Frangieh21
-from data.accessors.mcfaline23 import McFaline23
-from data.accessors.jiang24 import Jiang24
-from data.accessors.perturbseq_all_bj_v0 import PerturbSeqAllBJV0
+from perturbench.data.accessors.srivatsan20 import Sciplex3
+from perturbench.data.accessors.norman19 import Norman19
+from perturbench.data.accessors.frangieh21 import Frangieh21
+from perturbench.data.accessors.mcfaline23 import McFaline23
+from perturbench.data.accessors.jiang24 import Jiang24
+from perturbench.data.datasplitter import PerturbationDataSplitter
 from .evaluation import Evaluation
 
 class Evaluator:
@@ -33,7 +33,6 @@ class Evaluator:
             "norman19-combo",
             "frangieh21-transfer",
             "jiang24-transfer",
-            "perturbseq_all_bj_v0-transfer",
         ]
 
     @staticmethod
@@ -49,27 +48,23 @@ class Evaluator:
         if task == "srivatsan20-transfer":
             adata = Sciplex3(
                 data_cache_dir=local_data_cache
-            ).get_anndata(backed=backed)
+            ).get_anndata()
         elif task == "norman19-combo":
             adata = Norman19(
                 data_cache_dir=local_data_cache
-            ).get_anndata(backed=backed)
+            ).get_anndata()
         elif task == "frangieh21-transfer":
             adata = Frangieh21(
                 data_cache_dir=local_data_cache
-            ).get_anndata(backed=backed)
+            ).get_anndata()
         elif task == "mcfaline23-transfer":
             adata = McFaline23(
                 data_cache_dir=local_data_cache
-            ).get_anndata(backed=backed)
+            ).get_anndata()
         elif task == "jiang24-transfer":
             adata = Jiang24(
                 data_cache_dir=local_data_cache
-            ).get_anndata(backed=backed)
-        elif task == "perturbseq_all_bj_v0-transfer":
-            adata = PerturbSeqAllBJV0(
-                data_cache_dir=local_data_cache
-            ).get_anndata(backed=backed)
+            ).get_anndata()
         else:
             raise ValueError(f"Task {task} is not supported.")
         
@@ -89,12 +84,10 @@ class Evaluator:
             data_override = ["data=mcfaline23"]
         elif task == "jiang24-transfer":
             data_override = ["data=jiang24"]
-        elif task == "perturbseq_all_bj_v0-transfer":
-            data_override = ["data=perturbseq_all_bj"]
         else:
             raise ValueError(f"Task {task} is not supported.")
         
-        with initialize_config_module(version_base="1.3", config_module="configs"):
+        with initialize_config_module(version_base="1.3", config_module="perturbench.configs"):
             cfg = compose(
                 config_name="train",
                 overrides=data_override + ["data.splitter.save=False"],
@@ -124,9 +117,15 @@ class Evaluator:
         ref_adata = Evaluator.get_task_data(task, local_data_cache)
         task_config = Evaluator.get_task_config(task)
         
+        self.split_dict = None  # Initialize before conditional assignment
         if split_value_to_evaluate is not None:
-            splitter = hydra.utils.instantiate(task_config.splitter)
-            split_dict = splitter.split(ref_adata.obs)
+            split_dict = PerturbationDataSplitter.split_dataset(
+                splitter_config=task_config.splitter,
+                obs_dataframe=ref_adata.obs,
+                perturbation_key=task_config.perturbation_key,
+                perturbation_combination_delimiter=task_config.perturbation_combination_delimiter,
+                perturbation_control_value=task_config.perturbation_control_value,
+            )
             self.split_dict = split_dict
             ref_adata = ref_adata[split_dict[split_value_to_evaluate]].to_memory()
             
@@ -160,9 +159,9 @@ class Evaluator:
         ev = Evaluation(
             model_adatas=model_predictions,
             ref_adata=self.ref_adata,
-            pert_col=self.task_config.data_iter_factory.perturbation_key,
-            cov_cols=self.task_config.data_iter_factory.covariate_keys,
-            ctrl=self.task_config.data_iter_factory.perturbation_control_value,
+            pert_col=self.task_config.perturbation_key,
+            cov_cols=self.task_config.covariate_keys,
+            ctrl=self.task_config.perturbation_control_value,
         )
 
         summary_metrics_dict = {}
@@ -186,7 +185,7 @@ class Evaluator:
             avg_rank = rank_df.groupby("model").mean("rank")
             summary_metrics_dict[metric + "_rank_" + aggr] = avg_rank["rank"]
 
-        summary_metrics = pd.DataFrame(summary_metrics_dict).T.applymap(
+        summary_metrics = pd.DataFrame(summary_metrics_dict).T.map(
             lambda x: float(
                 np.format_float_positional(
                     x, precision=4, unique=False, fractional=False, trim="k"
