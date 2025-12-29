@@ -59,6 +59,10 @@ class Evaluation:
             ctrl (str): Name of control perturbation
             cov_cols (list): Name(s) of covariate column(s) in predicted/reference AnnData obs DataFrames
             features (list): Subset of features to use for evaluation (default: use all features)
+
+        Note:
+            This constructor modifies the input AnnData objects in-place
+            by removing 'X_pca' from obsm if present.
         """
         if features is None:
             features = list(ref_adata.var_names)

@@ -50,6 +50,8 @@ def compute_metric(x, y, metric):
             score = np.mean(np.abs(x - y))
         elif metric == 'top_k_recall':
             score = top_k_recall(x, y, k=50)
+        else:
+            raise ValueError(f"Unknown metric: {metric}. Supported metrics: pearson, r2_score, cosine, mse, rmse, mae, top_k_recall")
     
     return(score)
 
@@ -131,7 +133,8 @@ def rank_helper(pred_ref_mat, metric_type):
 
         rel_ranks.loc[p] = np.where(pred_metrics.index == p)[0][0]
 
-    rel_ranks = rel_ranks / (len(rel_ranks) - 1)
+    if len(rel_ranks) > 1:
+        rel_ranks = rel_ranks / (len(rel_ranks) - 1)
     return rel_ranks
 
 
@@ -154,7 +157,7 @@ def deg_pairwise_jaccard_similarity_helper(
     deg_recalled_pd = deg_recalled_pd.T
 
     pairwise_jaccard_similarity = np.zeros((len(deg_recalled_pd), len(deg_recalled_pd)), dtype=np.float32)
-    pairwise_jaccard_similarity.fill(np.NaN)
+    pairwise_jaccard_similarity.fill(np.nan)
 
     for i in range(len(deg_recalled_pd)):
         for j in range(i + 1, len(deg_recalled_pd)):
