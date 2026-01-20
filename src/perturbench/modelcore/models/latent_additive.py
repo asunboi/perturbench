@@ -146,8 +146,13 @@ class LatentAdditive(PerturbationModel):
         covariates: dict[str, torch.Tensor],
     ):
         if self.inject_covariates_encoder or self.inject_covariates_decoder:
+            # for cov in covariates.values():
+            #     print(cov)
+            # merged_covariates = torch.cat(
+            #     [cov.squeeze() for cov in covariates.values()], dim=1
+            # )
             merged_covariates = torch.cat(
-                [cov.squeeze() for cov in covariates.values()], dim=1
+                [cov.squeeze(-1) for cov in covariates.values()], dim=1
             )
 
         if self.inject_covariates_encoder:

@@ -26,6 +26,7 @@ class PerturbationDataSplitter:
     perturbation_key: str
     perturbation_control_value: str
     covariate_keys: list[str] | str | None = None
+    batch_key: str | None = None
     perturbation_combination_delimiter: str = "+"
 
     @staticmethod
@@ -119,6 +120,7 @@ class PerturbationDataSplitter:
         perturbation_key: str,
         perturbation_control_value: str,
         covariate_keys: list[str] | str | None = None,
+        batch_key: str | None = None,
         perturbation_combination_delimiter: str = "+",
     ):
         """Initialize PerturbationDataSplitter object."""

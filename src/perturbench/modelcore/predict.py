@@ -5,6 +5,8 @@ import logging
 import hydra
 import os
 
+import scanpy as sc
+
 from perturbench.data.datasets import Counterfactual
 from perturbench.data.utils import batch_dataloader
 from perturbench.data.collate import noop_collate
@@ -89,7 +91,13 @@ def predict(
         os.makedirs(cfg.output_path)
     trained_model.prediction_output_path = cfg.output_path
     trainer.predict(model=trained_model, dataloaders=inference_dataloader)
-
+    
+    ## added control adata output
+    col = pred_df.columns[1]
+    vals = pred_df.iloc[:, 1].dropna().unique()
+    control_adata.obs = control_adata.obs.drop(columns=["_parsed_perturbations"], errors="ignore")
+    control_adata = control_adata[control_adata.obs[col].isin(vals)].copy()
+    control_adata.write_h5ad(cfg.output_path + f"/ctrl.h5ad")
 
 @hydra.main(version_base="1.3", config_path="../configs", config_name="predict.yaml")
 def main(cfg: DictConfig):

@@ -201,6 +201,7 @@ def batch_dataloader(
     else:
         sampler = SequentialSampler(dataset)
 
+    #batch_sampler = BatchSampler(sampler, batch_size=batch_size, drop_last=True)
     batch_sampler = BatchSampler(sampler, batch_size=batch_size, drop_last=False)
     dataloader = DataLoader(dataset, sampler=batch_sampler, **kwargs)
     return dataloader

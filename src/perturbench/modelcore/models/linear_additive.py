@@ -136,10 +136,15 @@ class LinearAdditive(PerturbationModel):
             covariates,
             _,
         ) = self.unpack_batch(batch)
+
         predicted_perturbed_expression = self.forward(
             control_expression, perturbation, covariates
         )
+        
+        #print(predicted_perturbed_expression)
+
         loss = F.mse_loss(predicted_perturbed_expression, observed_perturbed_expression)
+        
         self.log("train_loss", loss, prog_bar=True, logger=True, batch_size=len(batch))
         return loss
 
@@ -154,9 +159,14 @@ class LinearAdditive(PerturbationModel):
         predicted_perturbed_expression = self.forward(
             control_expression, perturbation, covariates
         )
+        
+        #print(predicted_perturbed_expression)
+        #print(observed_perturbed_expression)
+
         val_loss = F.mse_loss(
-            predicted_perturbed_expression, observed_perturbed_expression
-        )
+                predicted_perturbed_expression, observed_perturbed_expression
+            )
+        
         self.log(
             "val_loss",
             val_loss,

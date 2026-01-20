@@ -132,14 +132,14 @@ class PerturbationModel(L.LightningModule, ABC):
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
 
     def unpack_batch(self, batch: Batch):
-        observed_perturbed_expression = batch.gene_expression.squeeze()
+        observed_perturbed_expression = batch.gene_expression.squeeze(-1)
         control_expression = (
-            batch.controls.squeeze() if batch.controls is not None else None
+            batch.controls.squeeze(-1) if batch.controls is not None else None
         )
-        perturbation = batch.perturbations.squeeze()
+        perturbation = batch.perturbations.squeeze(-1)
         covariates = batch.covariates if batch.covariates is not None else None
         embeddings = (
-            batch.embeddings.squeeze() if batch.embeddings is not None else None
+            batch.embeddings.squeeze(-1) if batch.embeddings is not None else None
         )
         return (
             observed_perturbed_expression,
@@ -231,6 +231,14 @@ class PerturbationModel(L.LightningModule, ABC):
             cov_cols=train_context["covariate_keys"],
             ctrl=train_context["perturbation_control_value"],
         )
+
+        print(predicted_adata.shape)
+        print(model_name)
+        print(reference_adata.shape)
+        print(train_context["perturbation_key"])
+        print(train_context["covariate_keys"])
+        print(train_context["perturbation_control_value"])
+
         for aggr in self.unique_aggregations:
             ev.aggregate(aggr_method=aggr)
         del ev.adatas
@@ -244,14 +252,20 @@ class PerturbationModel(L.LightningModule, ABC):
         super().on_test_end()
         ev = merge_evals(self.evaluation_list)
 
+        print(ev.evals)
+
         summary_metrics_dict = {}
         for eval_dict in self.evaluation_config.evaluation_pipelines:
             aggr = eval_dict["aggregation"]
             metric = eval_dict["metric"]
             ev.evaluate(aggr_method=aggr, metric=metric)
-
+            
             df = ev.evals[aggr][metric].copy()
             avg = df.groupby("model").mean("metric")
+
+            print(eval_dict)            
+            print(avg)
+
             summary_metrics_dict[metric + "_" + aggr] = avg["metric"]
 
             if eval_dict.get("rank"):
