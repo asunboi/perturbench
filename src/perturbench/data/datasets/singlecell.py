@@ -59,9 +59,12 @@ class SingleCellPerturbation(Dataset):
             # Input is a list of callables
             if len(transforms) > 1:
                 transform = Compose(transforms)
-            # Input is a list of a single callable
-            else:
+            elif len(transforms) == 1:
+                # Input is a list of a single callable
                 transform = transforms[0]
+            else:
+                # Empty list case
+                transform = None
         # Input is a callable or None
         except TypeError:
             transform = transforms
@@ -394,6 +397,8 @@ class SingleCellPerturbationWithControls(SingleCellPerturbation):
             )
         )
 
+        # When controls are present, use control cell embeddings for input
+        # since predictions are made from control expression state
         if self.embeddings is not None:
             batch = batch._replace(
                 embeddings=torch.Tensor(self.embeddings[sampled_control_idxs, :])

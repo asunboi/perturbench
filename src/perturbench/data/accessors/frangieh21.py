@@ -14,10 +14,13 @@ class Frangieh21(Accessor):
     def __init__(self, data_cache_dir="../perturbench_data"):
         super().__init__(
             data_cache_dir=data_cache_dir,
-            dataset_hf_url="https://huggingface.co/datasets/altoslabs/perturbench/resolve/main/frangieh19_preprocessed.h5ad.gz",
+            dataset_hf_url="https://huggingface.co/datasets/altoslabs/perturbench/resolve/main/frangieh21_processed.h5ad.gz",
+            split_hf_url="https://huggingface.co/datasets/altoslabs/perturbench/resolve/main/frangieh21_split.csv",
             dataset_orig_url="https://zenodo.org/records/7041849/files/FrangiehIzar2021_RNA.h5ad?download=1",
             dataset_name="frangieh21",
         )
+        self.split_data_path = f"{self.data_cache_dir}/{self.dataset_name}_split.csv"
+        self.split_error_message = "Try using the notebooks/neurips2025/build_jiang24_frangieh21_splits.ipynb to generate the split."
 
     def get_anndata(self):
         """

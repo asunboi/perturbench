@@ -1,20 +1,15 @@
 ## Model evaluation module
-
-import scipy
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import scanpy as sc
-import anndata as ad
 from anndata import AnnData
-from ..plotting import boxplot_jitter, scatter_labels
 from collections import defaultdict
 import pickle
 import os
-from .aggregation import aggr_helper
-from ..utils import merge_cols
-from .metrics import compare_perts, pairwise_metric_helper, rank_helper
 
+from .aggregation import aggregate_adata
+from .metrics import compare_perts, pairwise_metric_helper, rank_helper
+from ..plotting import boxplot_jitter, scatter_labels
 
 class Evaluation:
     """A class for evaluating perturbation prediction models.
@@ -36,8 +31,6 @@ class Evaluation:
             Dictionary of pairwise prediction evaluations. Access pattern is `pairwise_evals[aggr_method][metric][model_name]` which returns a dataframe of pairwise evaluation scores
         rank_evals (dict)
             Dictionary of rank prediction evaluations computed from the pairwise_evals matrices. Access pattern is `rank_evals[aggr_method][metric]` which returns a dataframe of rank evaluation scores
-        reduction (str)
-            Type of dimensional reduction applied (currently only pca is supported)
         deg_dict (dict)
             Dictionary of differentially expressed genes per perturbation/covariate
         use_degs (dict)
@@ -52,7 +45,7 @@ class Evaluation:
         ref_adata: AnnData,
         pert_col: str,
         model_names: list = None,
-        ctrl: str | None = None,
+        ctrl: str | list | None = None,
         cov_cols: list | str | None = None,
         features: list | None = None,
     ):
@@ -66,6 +59,10 @@ class Evaluation:
             ctrl (str): Name of control perturbation
             cov_cols (list): Name(s) of covariate column(s) in predicted/reference AnnData obs DataFrames
             features (list): Subset of features to use for evaluation (default: use all features)
+
+        Note:
+            This constructor modifies the input AnnData objects in-place
+            by removing 'X_pca' from obsm if present.
         """
         if features is None:
             features = list(ref_adata.var_names)
@@ -84,21 +81,30 @@ class Evaluation:
                 )
 
         for name in model_names:
-            assert name != "ref"
+            if name == "ref":
+                raise ValueError("Model name 'ref' is reserved for reference perturbation expression")
 
         adata_dict = {}
         for i, k in enumerate(model_names):
             adata_i = model_adatas[i][:, features]
             if adata_i.obs[pert_col].dtype.name != "category":
                 adata_i.obs[pert_col] = adata_i.obs[pert_col].astype("category")
-            if ctrl not in adata_i.obs[pert_col].cat.categories:
-                raise ValueError(
-                    "Control perturbation not found in model predictions %s" % k
-                )
+            if 'X_pca' in adata_i.obsm.keys():
+                del adata_i.obsm['X_pca']
             adata_dict[k] = adata_i
-
+        
+        if 'X_pca' in ref_adata.obsm.keys():
+            del ref_adata.obsm['X_pca']
         adata_dict["ref"] = ref_adata
-        self.ctrl = ctrl
+
+        if isinstance(ctrl, list):
+            for k, adata in adata_dict.items():
+                adata[adata.obs[pert_col].isin(ctrl)].obs[pert_col] = "ctrl"
+                adata_dict[k] = adata
+            self.ctrl = "ctrl"
+
+        else:
+            self.ctrl = ctrl
 
         if isinstance(cov_cols, str):
             cov_cols = [cov_cols]
@@ -113,43 +119,47 @@ class Evaluation:
         self.evals = {}
         self.pairwise_evals = {}
         self.rank_evals = {}
-        self.reduction = None
         self.deg_dict = None
         self.use_degs = defaultdict(dict)
         self.ref_uns = self.adatas["ref"].uns.copy()
 
+        self.mmd_df = None
+
     def aggregate(
         self,
-        aggr_method: str = "logfc",
+        aggr_method: str = "average",
         delim: str = "_",
         pseudocount: float = 0.1,
         adjust_var: bool = True,
-        de_method: str = "wilcoxon",
+        de_method: str = "t-test_overestim_var",
+        use_control_variance: bool = False,
+        n_comps: int = 100,
+        pca_model=None,
         **kwargs,
     ):
         """Aggregate cells per perturbation
 
         Args:
-            aggr_method (str): Method used to aggregate cells per perturbation (logFC, average, scaled avg, default: logFC)
+            aggr_method (str): Method used to aggregate cells per perturbation (logFC, average, scaled avg, pca, default: logFC)
             delim (str): Delimiter separating covariates (default: '_')
             pseudocount (float): Pseudocount to add to fold-changes to avoid undefined log fold-changes
             adjust_var (bool): If `aggr_method` is `variance`, use variances adjusted by average expression (default: True)
             de_method (str): If `aggr_method` is `logp`, use this differential expression method for computing p-values
+            n_comps (int): Number of PCA components to use when aggr_method is 'pca' (default: 30)
         """
-        if aggr_method not in [
-            "average",
-            "scaled",
-            "logfc",
-            "logp",
-            "var",
-            "var-logfc",
-        ]:
-            raise ValueError("Invalid aggregation method")
-
+        if aggr_method not in self.list_available_aggregations():
+            raise ValueError(f"Invalid aggregation method {aggr_method}")
+        
         agg_adatas = {}
-        for k in self.adatas:
-            agg_adatas[k] = aggr_helper(
-                self.adatas[k],
+        ref_adata = self.adatas["ref"] if aggr_method in ['pca', 'pca_average'] else None
+        for model_name in self.adatas:
+            if model_name == 'ref':
+                use_control_variance_model = False
+            else:
+                use_control_variance_model = use_control_variance
+            
+            agg_adatas[model_name] = aggregate_adata(
+                self.adatas[model_name],
                 aggr_method=aggr_method,
                 pert_col=self.pert_col,
                 cov_cols=self.cov_cols,
@@ -158,13 +168,17 @@ class Evaluation:
                 delim=delim,
                 adjust_var=adjust_var,
                 de_method=de_method,
+                use_control_variance=use_control_variance_model,
+                ref_adata=ref_adata,
+                n_comps=n_comps,
+                pca_model=pca_model,
                 **kwargs,
             )
 
-            self.aggr[aggr_method] = agg_adatas
-            self.evals[aggr_method] = {}
-            self.pairwise_evals[aggr_method] = {}
-            self.rank_evals[aggr_method] = {}
+        self.aggr[aggr_method] = agg_adatas
+        self.evals[aggr_method] = {}
+        self.pairwise_evals[aggr_method] = {}
+        self.rank_evals[aggr_method] = {}
 
     def get_aggr(self, aggr_method: str, model: str):
         """Returns perturbation expression aggregated per perturbation
@@ -178,34 +192,6 @@ class Evaluation:
         """
         return self.aggr[aggr_method][model]
 
-    def reduce(
-        self,
-        reduction: str = "pca",
-        n_comps: int = 30,
-    ):
-        """Reduce dimensionality of expression by projecting predicted expression onto reference expression PCs
-
-        Args:
-            reduction (str): Reduction method (currently only pca is supported)
-            n_comps (int): Number of embedding components (default: 30)
-
-        Returns:
-            PC embeddings are stored in self.adatas
-        """
-
-        ref = self.adatas["ref"]
-        if "X_pca" not in ref.obsm.keys():
-            sc.tl.pca(ref, n_comps=n_comps)
-            sc.pp.neighbors(ref)
-            sc.tl.umap(ref)
-
-        for k, adata in self.adatas.items():
-            if k != "ref":
-                sc.tl.ingest(adata, ref, embedding_method="pca")
-            adata_pca = ad.AnnData(adata.obsm["X_pca"].copy(), obs=adata.obs.copy())
-            self.adatas[k] = adata_pca
-
-        self.reduction = reduction
 
     def evaluate(
         self,
@@ -215,14 +201,13 @@ class Evaluation:
         plot: bool = False,
         plot_size: tuple | None = None,
         return_df: bool = False,
-        deg_key: str | None = None,
-        n_top_genes: int = 100,
+        n_top_degs: int | None = None,
     ):
         """Evaluate predicted perturbation effect against reference perturbation effect
 
         Args:
             aggr_method (str): Method used to aggregate cells per perturbation (logFC, average, scaled avg, none, default: logFC). Set to none if using energy distance as the evaluation metric
-            metric (str): Metric used to measure prediction accuracy (pearson, spearman, r2_score, dcor, cosine, mse, energy, default: pearson)
+            metric (str): Metric used to measure prediction accuracy (pearson, spearman, r2_score, dcor, cosine, mse, energy, deg_recall, default: pearson)
             perts (list): Subset of perturbations to evaluate (default: evaluate all perturbations)
             return_df (bool): If True, return evaluation dataframe
             plot (bool): If True, plot evaluation results as boxplots
@@ -234,142 +219,67 @@ class Evaluation:
             None or pandas.DataFrame: Per-perturbation evaluation of model predictions
         """
 
-        if metric not in [
-            "pearson",
-            # 'spearman',
-            "r2_score",
-            "mse",
-            "rmse",
-            "mae",
-            "cosine",
-            "energy",
-        ]:
+        if metric not in self.list_available_metrics():
             raise ValueError("Metric not implemented")
 
-        if deg_key is not None:
-            deg_dict = self.ref_uns[deg_key]
-            self.deg_dict = deg_dict
+        if n_top_degs is not None:
+            if self.deg_dict is None:
+                self.deg_dict = aggregate_adata(
+                    self.adatas["ref"],
+                    aggr_method="scores",
+                    pert_col=self.pert_col,
+                    cov_cols=self.cov_cols,
+                    ctrl=self.ctrl,
+                    pseudocount=0.1,
+                    delim="_",
+                )
             self.use_degs[aggr_method][metric] = True
         else:
             self.use_degs[aggr_method][metric] = False
 
-        if metric == "energy":
-            try:
-                from scperturb import edist_to_control
-            except ImportError as exc:
-                raise ValueError(
-                    "Please install scperturb (https://github.com/sanderlab/scPerturb/) to use energy distance as an evaluation metric"
-                ) from exc
+        if aggr_method not in self.aggr.keys():
+            self.aggregate(aggr_method=aggr_method)
 
-            if aggr_method != "none":
-                raise ValueError(
-                    "Please set aggr_method to none to use energy distance as an evaluation metric"
-                )
+        aggr_ref = self.aggr[aggr_method]["ref"]
 
-            if perts is None:
-                perts = list(self.adatas["ref"].obs[self.pert_col].unique())
-
-            perts = [x for x in perts if x != self.ctrl]
-            for k in self.adatas:
-                self.adatas[k] = self.adatas[k][
-                    self.adatas[k].obs[self.pert_col].isin(perts)
-                ]
-
-            if self.cov_cols is not None:
-                for k in self.adatas:
-                    self.adatas[k].obs["cov_pert"] = merge_cols(
-                        self.adatas[k].obs, self.cov_cols + [self.pert_col], delim="_"
-                    )
-            else:
-                for k in self.adatas:
-                    self.adatas[k].obs["cov_pert"] = self.adatas[k].obs[self.pert_col]
-
-            adata_ref = self.adatas["ref"]
-            pert_cov_unique = adata_ref.obs["cov_pert"].unique()
-
-            if (deg_key is not None) and (deg_key not in adata_ref.uns.keys()):
-                raise ValueError(
-                    "Please run `sc.tl.rank_genes_groups` to compute differentially expressed genes"
-                )
-
-            edist_df_list = []
-            for p in pert_cov_unique:
-                pert_ad_list = []
-                for k, v in self.adatas.items():
-                    v = v[v.obs["cov_pert"] == p]
-                    v.obs["model"] = k
-                    pert_ad_list.append(v)
-
-                pert_ad = ad.concat(pert_ad_list)
-                if scipy.sparse.issparse(pert_ad.X):
-                    pert_ad.X = pert_ad.X.toarray()
-
-                if deg_key is not None:
-                    p_degs = deg_dict[p]
-                    pert_ad = pert_ad[:, p_degs[:n_top_genes]]
-
-                pert_ad.obsm["X_edist"] = pert_ad.X
-                pert_df = edist_to_control(
-                    pert_ad,
-                    obs_key="model",
-                    obsm_key="X_edist",
-                    control="ref",
-                    verbose=False,
-                )
-                pert_df.columns = [p]
-                edist_df_list.append(pert_df)
-
-            evals = pd.concat(edist_df_list, axis=1)
-            evals["model"] = evals.index
-            evals = evals.melt(
-                id_vars=["model"], var_name="cov_pert", value_name="metric"
-            )
-            evals = evals.loc[evals.model != "ref", :]
-            evals = evals.loc[:, ["cov_pert", "model", "metric"]]
-            self.evals[aggr_method] = {}
-
-        else:
-            if aggr_method not in self.aggr.keys():
-                self.aggregate(aggr_method=aggr_method)
-
-            aggr_ref = self.aggr[aggr_method]["ref"]
-            ref_perts = list(aggr_ref.obs_names)
-
-            if deg_key is not None:
-                deg_dict = self.deg_dict
-            else:
-                deg_dict = None
-
-            evals = []
-            for k, aggr in self.aggr[aggr_method].items():
-                if k not in ["ref", "target"]:
-                    perts = list(set(aggr.obs_names).intersection(ref_perts))
-                    if len(perts) < len(ref_perts):
-                        missing_perts = [x for x in ref_perts if x not in perts]
-                        print(
-                            "Warning: missing perturbations for model %s: %s"
-                            % (k, str(missing_perts))
-                        )
-
+        evals = []
+        for k, aggr in self.aggr[aggr_method].items():
+            if k not in ["ref", "target"]:
+                for cov, cov_aggr in aggr.items():
+                    ref_perts = list(aggr_ref[cov].keys())
+                    perts = list(set(cov_aggr.keys()).intersection(ref_perts))
+                    if len(perts) == 0:
+                        raise ValueError(f"No perturbations in common between {k} and ref for covariate {cov}")
+                    
+                    if n_top_degs is not None:
+                        deg_mask = {}
+                        for p in perts:
+                            p_scores = np.abs(self.deg_dict[cov][p])
+                            indices = np.argsort(p_scores)[-n_top_degs:]
+                            indices = indices[::-1]
+                            deg_mask[p] = indices
+                    else:
+                        deg_mask = None
+                    
                     scores = compare_perts(
-                        aggr.to_df(),
-                        aggr_ref.to_df(),
+                        cov_aggr,
+                        aggr_ref[cov],
                         perts=perts,
                         metric=metric,
-                        deg_dict=deg_dict,
+                        deg_mask=deg_mask,
                     )
                     df = pd.DataFrame(
                         index=perts,
                         data={
-                            "cov_pert": perts,
+                            "cov_pert": [f"{cov}_{p}" for p in perts],
                             "model": [k] * len(perts),
                             "metric": scores,
                         },
                     )
                     evals.append(df)
 
-            evals = pd.concat(evals, axis=0)
-            evals.reset_index(drop=True, inplace=True)
+        evals = pd.concat(evals, axis=0)
+        evals.reset_index(drop=True, inplace=True)
 
         self.evals[aggr_method][metric] = evals
 
@@ -385,7 +295,7 @@ class Evaluation:
         self,
         aggr_method: str,
         metric: str,
-        melt=False,
+        melt: bool = False,
     ):
         """Returns per-perturbation evaluation of model predictions
 
@@ -402,6 +312,175 @@ class Evaluation:
             eval_df = eval_df.pivot(index="cov_pert", columns="model", values="metric")
         return eval_df
 
+
+    def evaluate_pairwise(
+        self,
+        aggr_method: str,
+        metric: str,
+        models: list | None = None,
+    ):
+        """Evaluate every predicted perturbation effect against every reference perturbation effect
+
+        Args:
+            aggr_method (str): Method used to aggregate cells per perturbation (logFC, average, scaled avg)
+            metric (str): Metric used to measure prediction accuracy (pearson, spearman, r2_score, dcor, cosine, mse)
+            models (list,None): List of models evaluate (default: evaluate all models)
+            deg_key (str | None, optional): Key in `adata.uns` where differentially expressed genes are stored (default: None)
+            verbose (bool, optional): If True, print evaluation progress (default: False)
+
+        Returns:
+            Stashes matrix of predicted perturbation effect vs reference perturbation effect evaluation scores per unique set of covariates in `self.pairwise_evals`
+        """
+        self.pairwise_evals[aggr_method][metric] = {}
+        ref_aggr = self.aggr[aggr_method]["ref"]
+        
+        if models is None:
+            models = [
+                k for k in self.aggr[aggr_method].keys() if k not in ["ref", "target"]
+            ]
+
+        for model_name in models:
+            if model_name not in self.aggr[aggr_method].keys():
+                raise ValueError("Model %s not found" % model_name)
+
+            aggr = self.aggr[aggr_method][model_name]
+
+            if (self.cov_cols is not None) and (len(self.cov_cols) > 0):
+                cov_unique = list(ref_aggr.keys())
+                mat_dict = {}
+                for cov in cov_unique:
+                    aggr_cov = aggr[cov]
+                    ref_aggr_cov = ref_aggr[cov]
+
+                    perts_common = list(
+                        set(aggr_cov.keys()).intersection(ref_aggr_cov.keys())
+                    )
+
+                    mat = pairwise_metric_helper(
+                        aggr_cov,
+                        ref_aggr_cov,
+                        perts=perts_common,
+                        metric=metric,
+                    )
+                    mat_dict[cov] = mat
+                self.pairwise_evals[aggr_method][metric][model_name] = mat_dict
+
+            else:
+                perts_common = list(
+                    set(aggr.keys()).intersection(ref_aggr.keys())
+                )
+                mat = pairwise_metric_helper(
+                    aggr,
+                    ref_aggr,
+                    perts=perts_common,
+                    metric=metric,
+                )
+                self.pairwise_evals[aggr_method][metric][model_name] = mat
+
+    def evaluate_rank(
+        self,
+        aggr_method: str,
+        metric: str,
+        models: list | None = None,
+        return_df: bool=False,
+        transpose: bool=False,
+    ):
+        """Evaluate rank ordering of predicted perturbation effects vs a given reference perturbation effect.
+           A rank of 0 indicates predictions are ordered perfectly. A rank of 0.5 indicates predictions are ordered randomly.
+
+        Args:
+            aggr_method (str): Method used to aggregate cells per perturbation (logFC, average, scaled avg)
+            metric (str): Metric used to measure prediction accuracy (pearson, spearman, r2_score, dcor, cosine, mse)
+            models (list,None): List of models evaluate (default: evaluate all models)
+
+        Returns:
+            Stashes a dataframe of rank evaluation scores per unique set of covariates in `self.rank_evals`
+        """
+        if (self.pairwise_evals is None) or (
+            self.pairwise_evals[aggr_method][metric] is None
+        ):
+            raise ValueError(
+                "Please run pairwise evaluation using aggregation method %s and metric %s first"
+                % (aggr_method, metric)
+            )
+
+        if models is None:
+            models = [
+                k for k in self.aggr[aggr_method].keys() if k not in ["ref", "target"]
+            ]
+
+        if metric in ["pearson", "spearman", "dcor", "r2_score", "cosine", "top_k_recall"]:
+            metric_type = "similarity"
+        elif metric in ["mse", "rmse", "mae", "energy", "mmd"]:
+            metric_type = "distance"
+        else:
+            raise ValueError("Invalid metric")
+
+        ref_aggr = self.aggr[aggr_method]["ref"]
+        rank_df_list = []
+        for model in models:
+            if (self.cov_cols is not None) and (len(self.cov_cols) > 0):
+                cov_unique = list(ref_aggr.keys())
+                for cov in cov_unique:
+                    mat = self.pairwise_evals[aggr_method][metric][model][cov]
+                    cov_ranks = rank_helper(mat, metric_type=metric_type)
+                    cov_df = pd.DataFrame(
+                        {
+                            "model": [model] * len(cov_ranks),
+                            "cov_pert": [f"{cov}_{p}" for p in cov_ranks.index.values],
+                            "rank": cov_ranks.values,
+                        }
+                    )
+                    
+                    if transpose:
+                        cov_ranks_transpose = rank_helper(mat.T, metric_type=metric_type)
+                        cov_df['rank_transpose'] = cov_ranks_transpose.values
+                    
+                    rank_df_list.append(cov_df)
+            else:
+                mat = self.pairwise_evals[aggr_method][metric][model]
+                ranks = rank_helper(mat, metric_type=metric_type)
+                df = pd.DataFrame(
+                    {
+                        "model": [model] * len(ranks),
+                        "cov_pert": ranks.index,
+                        "rank": ranks.values,
+                    }
+                )
+                
+                if transpose:
+                    ranks_transpose = rank_helper(mat.T, metric_type=metric_type)
+                    df['rank_transpose'] = ranks_transpose.values
+                
+                rank_df_list.append(df)
+
+        rank_df = pd.concat(rank_df_list)
+        self.rank_evals[aggr_method][metric] = rank_df
+        
+        if return_df:
+            return rank_df
+
+    def get_rank_eval(
+        self,
+        aggr_method: str,
+        metric: str,
+        melt: bool = False,
+    ):
+        """Returns per-perturbation evaluation of model predictions
+
+        Args:
+            aggr_method (str): Method used to aggregate cells per perturbation (logFC, average, scaled avg, default: logFC)
+            metric (str): Metric used to measure prediction accuracy (pearson, spearman, r2_score, dcor, default: pearson)
+            melt (bool): If True, return DataFrame with one column per model. Otherwise each model will have its own column
+
+        Returns:
+            pandas.DataFrame: Per-perturbation evaluation of model predictions
+        """
+        eval_df = self.rank_evals[aggr_method][metric]
+        if not melt:
+            eval_df = eval_df.pivot(index="cov_pert", columns="model", values="rank")
+        return eval_df
+
     def prediction_scatter(
         self,
         perts: list,
@@ -412,7 +491,6 @@ class Evaluation:
         x_title: str = "pred expr",
         y_title: str = "ref expr",
         axis_title_size: float = 15,
-        title_size: float = 16,
         figsize: tuple | None = None,
         show_metric=True,
         n_top_genes: int = 100,
@@ -491,8 +569,8 @@ class Evaluation:
         for ax, pert in zip(axs[:, 0], perts):
             ax.set_ylabel(pert, size="large")
 
-        # fig.supxlabel(x_title, size=axis_title_size)
-        # fig.supylabel(y_title, size=axis_title_size)
+        fig.supxlabel(x_title, size=axis_title_size)
+        fig.supylabel(y_title, size=axis_title_size)
         plt.show()
 
     def summary_plots(
@@ -563,214 +641,38 @@ class Evaluation:
         plt.suptitle(title, size=title_size)
         plt.show()
 
-    def evaluate_pairwise(
-        self,
-        aggr_method: str,
-        metric: str,
-        models: list | None = None,
-        deg_key: str | None = None,
-        verbose: bool = False,
-    ):
-        """Evaluate every predicted perturbation effect against every reference perturbation effect
-
-        Args:
-            aggr_method (str): Method used to aggregate cells per perturbation (logFC, average, scaled avg)
-            metric (str): Metric used to measure prediction accuracy (pearson, spearman, r2_score, dcor, cosine, mse)
-            models (list,None): List of models evaluate (default: evaluate all models)
-            deg_key (str | None, optional): Key in `adata.uns` where differentially expressed genes are stored (default: None)
-            verbose (bool, optional): If True, print evaluation progress (default: False)
-
-        Returns:
-            Stashes matrix of predicted perturbation effect vs reference perturbation effect evaluation scores per unique set of covariates in `self.pairwise_evals`
-        """
-        self.pairwise_evals[aggr_method][metric] = {}
-        ref_aggr = self.aggr[aggr_method]["ref"]
-
-        if models is None:
-            models = [
-                k for k in self.aggr[aggr_method].keys() if k not in ["ref", "target"]
-            ]
-
-        if deg_key is not None:
-            if self.deg_dict is not None:
-                deg_dict = self.deg_dict
-            else:
-                deg_dict = self.ref_uns[deg_key]
-
-            if self.pairwise_deg_dict is None:
-                pairwise_deg_dict = {}
-                if (self.cov_cols is None) or (len(self.cov_cols) == 0):
-                    for p1 in ref_aggr.obs_names:
-                        for p2 in ref_aggr.obs_names:
-                            genes1 = deg_dict[p1]
-                            genes2 = deg_dict[p2]
-                            pairwise_deg_dict[frozenset([p1, p2])] = list(
-                                set(genes1).union(genes2)
-                            )
-                else:
-                    for cov in ref_aggr.obs["cov_merged"].cat.categories:
-                        ref_aggr_cov = ref_aggr[ref_aggr.obs["cov_merged"] == cov, :]
-                        pairwise_deg_dict[cov] = {}
-                        for p1 in ref_aggr_cov.obs_names:
-                            for p2 in ref_aggr_cov.obs_names:
-                                genes1 = deg_dict[p1]
-                                genes2 = deg_dict[p2]
-                                pairwise_deg_dict[cov][frozenset([p1, p2])] = list(
-                                    set(genes1).union(genes2)
-                                )
-                self.pairwise_deg_dict = pairwise_deg_dict
-
-            else:
-                pairwise_deg_dict = self.pairwise_deg_dict
-
-        else:
-            pairwise_deg_dict = None
-
-        for model_name in models:
-            if model_name not in self.aggr[aggr_method].keys():
-                raise ValueError("Model %s not found" % model_name)
-
-            aggr = self.aggr[aggr_method][model_name]
-            aggr = aggr[list(set(aggr.obs_names).intersection(ref_aggr.obs_names)), :]
-
-            if (self.cov_cols is not None) and (len(self.cov_cols) > 0):
-                cov_unique = ref_aggr.obs["cov_merged"].cat.categories
-                mat_dict = {}
-                for cov in cov_unique:
-                    if verbose:
-                        print(cov)
-                    aggr_cov_df = aggr[aggr.obs["cov_merged"] == cov, :].to_df()
-                    ref_aggr_cov_df = ref_aggr[
-                        ref_aggr.obs["cov_merged"] == cov, :
-                    ].to_df()
-
-                    idx_common = list(
-                        set(aggr_cov_df.index).intersection(ref_aggr_cov_df.index)
-                    )
-                    aggr_cov_df = aggr_cov_df.loc[idx_common, :]
-                    ref_aggr_cov_df = ref_aggr_cov_df.loc[idx_common, :]
-
-                    if pairwise_deg_dict is not None:
-                        pairwise_deg_dict_cov = pairwise_deg_dict[cov]
-                    else:
-                        pairwise_deg_dict_cov = None
-
-                    mat = pairwise_metric_helper(
-                        aggr_cov_df,
-                        df2=ref_aggr_cov_df,
-                        metric=metric,
-                        pairwise_deg_dict=pairwise_deg_dict_cov,
-                        verbose=verbose,
-                    )
-                    mat_dict[cov] = mat
-                self.pairwise_evals[aggr_method][metric][model_name] = mat_dict
-
-            else:
-                aggr_df = aggr.to_df()
-                ref_aggr_df = ref_aggr.to_df()
-
-                idx_common = list(set(aggr_df.index).intersection(ref_aggr_df.index))
-                aggr_df = aggr_df.loc[idx_common, :]
-                ref_aggr_df = ref_aggr_df.loc[idx_common, :]
-
-                mat = pairwise_metric_helper(
-                    aggr_df,
-                    df2=ref_aggr_df,
-                    metric=metric,
-                    pairwise_deg_dict=pairwise_deg_dict,
-                    verbose=verbose,
-                )
-                self.pairwise_evals[aggr_method][metric][model_name] = mat
-
-    def evaluate_rank(
-        self,
-        aggr_method: str,
-        metric: str,
-        models: list | None = None,
-    ):
-        """Evaluate rank ordering of predicted perturbation effects vs a given reference perturbation effect.
-           A rank of 0 indicates predictions are ordered perfectly. A rank of 0.5 indicates predictions are ordered randomly.
-
-        Args:
-            aggr_method (str): Method used to aggregate cells per perturbation (logFC, average, scaled avg)
-            metric (str): Metric used to measure prediction accuracy (pearson, spearman, r2_score, dcor, cosine, mse)
-            models (list,None): List of models evaluate (default: evaluate all models)
-
-        Returns:
-            Stashes a dataframe of rank evaluation scores per unique set of covariates in `self.rank_evals`
-        """
-        if (self.pairwise_evals is None) or (
-            self.pairwise_evals[aggr_method][metric] is None
-        ):
-            raise ValueError(
-                "Please run pairwise evaluation using aggregation method %s and metric %s first"
-                % (aggr_method, metric)
-            )
-
-        if models is None:
-            models = [
-                k for k in self.aggr[aggr_method].keys() if k not in ["ref", "target"]
-            ]
-
-        if metric in ["pearson", "spearman", "dcor", "r2_score", "cosine"]:
-            metric_type = "similarity"
-        elif metric in ["mse", "rmse", "mae", "energy"]:
-            metric_type = "distance"
-        else:
-            raise ValueError("Invalid metric")
-
-        ref_aggr = self.aggr[aggr_method]["ref"]
-        rank_df_list = []
-        for model in models:
-            if (self.cov_cols is not None) and (len(self.cov_cols) > 0):
-                cov_unique = ref_aggr.obs["cov_merged"].cat.categories
-                for cov in cov_unique:
-                    mat = self.pairwise_evals[aggr_method][metric][model][cov]
-                    cov_ranks = rank_helper(mat, metric_type=metric_type)
-                    cov_df = pd.DataFrame(
-                        {
-                            "model": [model] * len(cov_ranks),
-                            "cov_pert": cov_ranks.index,
-                            "rank": cov_ranks.values,
-                        }
-                    )
-                    rank_df_list.append(cov_df)
-            else:
-                mat = self.pairwise_evals[aggr_method][metric][model]
-                ranks = rank_helper(mat, metric_type=metric_type)
-                df = pd.DataFrame(
-                    {
-                        "model": [model] * len(ranks),
-                        "cov_pert": ranks.index,
-                        "rank": ranks.values,
-                    }
-                )
-                rank_df_list.append(df)
-
-        rank_df = pd.concat(rank_df_list)
-        self.rank_evals[aggr_method][metric] = rank_df
-
-    def get_rank_eval(
-        self,
-        aggr_method: str,
-        metric: str,
-        melt: bool = False,
-    ):
-        """Returns per-perturbation evaluation of model predictions
-
-        Args:
-            aggr_method (str): Method used to aggregate cells per perturbation (logFC, average, scaled avg, default: logFC)
-            metric (str): Metric used to measure prediction accuracy (pearson, spearman, r2_score, dcor, default: pearson)
-            melt (bool): If True, return DataFrame with one column per model. Otherwise each model will have its own column
-
-        Returns:
-            pandas.DataFrame: Per-perturbation evaluation of model predictions
-        """
-        eval_df = self.rank_evals[aggr_method][metric]
-        if not melt:
-            eval_df = eval_df.pivot(index="cov_pert", columns="model", values="rank")
-        return eval_df
-
+    @classmethod
+    def list_available_aggregations(cls):
+        return [
+            "average",
+            "scaled",
+            "logfc",
+            "logp",
+            "logp_adjusted",
+            "var",
+            "var-logfc",
+            "scores",
+            "pvals",
+            "none",
+            "pca",
+            "pca_average",
+        ]
+    
+    @classmethod
+    def list_available_metrics(cls):
+        return [
+            "pearson",
+            "r2_score",
+            "mse",
+            "rmse",
+            "mae",
+            "cosine",
+            "cosine_weighted",
+            "energy",
+            "top_k_recall",
+            "mmd",
+        ]
+    
     def save(
         self,
         save_path: str,
@@ -836,30 +738,21 @@ def merge_evals(
             raise ValueError("Control perturbations do not match")
 
     for ev in evals[1:]:
-        for model_name, aggr_dict in ev.aggr.items():
-            if model_name not in ev_anchor.aggr:
-                ev_anchor.aggr[model_name] = aggr_dict
+        for aggr_method, aggr_dict in ev.aggr.items():
+            if aggr_method not in ev_anchor.aggr:
+                ev_anchor.aggr[aggr_method] = aggr_dict
             else:
-                for aggr_method, aggr_adata in aggr_dict.items():
-                    if aggr_method not in ev_anchor.aggr[model_name]:
-                        ev_anchor.aggr[model_name][aggr_method] = aggr_adata
+                for model_name, aggr in aggr_dict.items():
+                    if model_name not in ev_anchor.aggr[aggr_method]:
+                        ev_anchor.aggr[aggr_method][model_name] = aggr
                     else:
-                        aggr_ids_merge = [
-                            x
-                            for x in aggr_adata.obs_names
-                            if x
-                            not in list(
-                                ev_anchor.aggr[model_name][aggr_method].obs_names
-                            )
-                        ]
-
-                        if len(aggr_ids_merge) > 0:
-                            ev_anchor.aggr[model_name][aggr_method] = ad.concat(
-                                [
-                                    ev_anchor.aggr[model_name][aggr_method],
-                                    aggr_adata[aggr_ids_merge],
-                                ],
-                            )
+                        for cov in aggr.keys():
+                            if cov not in ev_anchor.aggr[aggr_method][model_name]:
+                                ev_anchor.aggr[aggr_method][model_name][cov] = aggr[cov]
+                            else:
+                                for p in aggr[cov].keys():
+                                    if p not in ev_anchor.aggr[aggr_method][model_name][cov]:
+                                        ev_anchor.aggr[aggr_method][model_name][cov][p] = aggr[cov][p]
 
         for aggr_method, eval_dict in ev.evals.items():
             if aggr_method not in ev_anchor.evals:

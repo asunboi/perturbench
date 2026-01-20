@@ -1,6 +1,10 @@
 import scanpy as sc
 import os
 from abc import abstractmethod
+import gzip
+import shutil
+from urllib.request import urlretrieve
+import pandas as pd
 import subprocess as sp
 
 from perturbench.data.datasets import (
@@ -23,29 +27,50 @@ def download_scperturb_adata(data_url, data_cache_dir, filename):
     tmp_data_path = f"{data_cache_dir}/{filename}"
 
     if not os.path.exists(tmp_data_path):
-        sp.call(f"wget {data_url} -O {tmp_data_path}", shell=True)
+        urlretrieve(data_url, tmp_data_path)
 
     adata = sc.read_h5ad(tmp_data_path)
     return adata
 
 
-def download_file(url: str, output_dir: str, output_filename: str) -> None:
+def download_file(url: str, output_dir: str, output_filename: str) -> str:
     """
-    Downloads a file from a URL to the specified output path using wget.
+    Downloads a file from a URL to the specified output directory.
+    If the file is gzipped, it will be automatically decompressed.
     
     Args:
         url (str): The URL of the file to download
-        output_path (str): The local path where the file should be saved
+        output_dir (str): The directory where the file should be saved
+        output_filename (str): The filename for the downloaded file
+    
+    Returns:
+        str: The path to the final file (decompressed if it was .gz)
     """
+    
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     output_path = f"{output_dir}/{output_filename}"
-    sp.call(f"wget {url} -O {output_path}", shell=True)
+    try:
+        urlretrieve(url, output_path)
+    except Exception as e:
+        print(f"Error downloading file from {url} with urlretrieve: {e}. Trying wget instead.")
+        try:
+            sp.run(["wget", url, "-O", output_path], check=True)
+        except Exception as e:
+            print(f"Error downloading file from {url} with wget: {e}")
+            raise ValueError(f"Error downloading file from {url}: {e}")
     
-    if ".gz" in output_filename:
-        sp.call(f"gzip -d {output_path}", shell=True)
+    if "h5ad.gz" in output_filename:
+        # Decompress the .gz file using native gzip module
+        decompressed_path = output_path.replace(".gz", "")
+        with gzip.open(output_path, 'rb') as f_in:
+            with open(decompressed_path, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        # Remove the original .gz file
+        os.remove(output_path)
+        return decompressed_path
     
-    return output_path.replace(".gz", "")    
+    return output_path    
 
 
 class Accessor:
@@ -54,18 +79,24 @@ class Accessor:
     dataset_orig_url: str
     dataset_name: str
     processed_data_path: str
+    split_hf_url: str | None = None
+    split_data_path: str | None = None
 
     def __init__(
         self,
-        dataset_hf_url,
-        dataset_orig_url,
-        dataset_name,
-        data_cache_dir="../perturbench_data",
+        dataset_hf_url: str,
+        dataset_orig_url: str,
+        dataset_name: str,
+        split_hf_url: str | None = None,
+        split_data_path: str | None = None,
+        data_cache_dir: str = "../perturbench_data",
     ):
         self.dataset_hf_url = dataset_hf_url
         self.dataset_orig_url = dataset_orig_url
         self.dataset_name = dataset_name
         self.data_cache_dir = data_cache_dir
+        self.split_hf_url = split_hf_url
+        self.split_data_path = split_data_path
 
     def get_dataset(
         self,
@@ -104,6 +135,23 @@ class Accessor:
 
         return dataset, context
 
+    
+    def get_split(self):
+        if os.path.exists(self.split_data_path):
+            print("Loading split from:", self.split_data_path)
+            split = pd.read_csv(self.split_data_path, index_col=0, header=None).iloc[:, 0]
+        else:
+            print("Downloading split from:", self.split_hf_url)
+            try:
+                download_file(self.split_hf_url, self.data_cache_dir, f"{self.dataset_name}_split.csv")
+                split = pd.read_csv(self.split_data_path, index_col=0, header=None).iloc[:, 0]
+            except Exception as e:
+                print(
+                    f"Error downloading file from {self.split_hf_url}: {e}." + self.split_error_message
+                )
+
+        return split
+    
     @abstractmethod
     def get_anndata(self):
         pass

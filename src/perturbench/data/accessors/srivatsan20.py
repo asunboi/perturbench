@@ -15,7 +15,7 @@ class Sciplex3(Accessor):
     def __init__(self, data_cache_dir="../perturbench_data"):
         super().__init__(
             data_cache_dir=data_cache_dir,
-            dataset_hf_url="https://huggingface.co/datasets/altoslabs/perturbench/resolve/main/srivatsan20_highest_dose_preprocessed.h5ad.gz",
+            dataset_hf_url="https://huggingface.co/datasets/altoslabs/perturbench/resolve/main/srivatsan20_highest_dose_processed.h5ad.gz",
             dataset_orig_url="https://zenodo.org/records/7041849/files/SrivatsanTrapnell2020_sciplex3.h5ad?download=1",
             dataset_name="sciplex3",
         )

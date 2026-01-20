@@ -32,8 +32,6 @@ def predict(
     # Load trained model
     if not os.path.exists(cfg.ckpt_path):
         raise ValueError(f"Checkpoint path {cfg.ckpt_path} does not exist")
-    if not os.path.exists(cfg.ckpt_path):
-        raise ValueError(f"Checkpoint path {cfg.ckpt_path} does not exist")
 
     trained_model: PerturbationModel = model_class.load_from_checkpoint(
         cfg.ckpt_path,

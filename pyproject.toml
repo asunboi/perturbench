@@ -20,7 +20,7 @@ dependencies = [
     'scipy==1.12.0',
     'tqdm',
     'lightning',
-    "torch",
+    "torch<=2.5.1",
     "torchvision",
     "tensorboard",
     "hydra-core",
@@ -37,6 +37,7 @@ dependencies = [
     'optuna',
     'ray',
     'python-dotenv',
+    'geomloss',
 ]
 dynamic = ["version"]
 
@@ -56,6 +57,7 @@ cli = [
 [project.scripts]
 train = "perturbench.modelcore.train:main"
 predict = "perturbench.modelcore.predict:main"
+download = "perturbench.data.accessors.download_all_datasets:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]  # list of folders that contain the packages (["."] by default)

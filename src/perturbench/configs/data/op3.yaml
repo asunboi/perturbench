@@ -1,0 +1,26 @@
+defaults:
+  - transform: linear_model_pipeline_controls
+  - splitter: saved
+  - evaluation: default
+
+_target_: data.modules.AnnDataLitModule
+data:
+  filename: ${paths.data_dir}/op3_processed.h5ad
+
+data_iter_factory:
+  _target_: data.datasets.SingleCellPerturbationWithControls.from_anndata
+  _partial_: True
+  perturbation_key: SMILES
+  perturbation_combination_delimiter: +
+  perturbation_control_value: 'C[S+](C)[O-]'  # dmso is the control
+  covariate_keys: [cell_type]
+  embedding_key: null
+  feature_filter_path: null
+
+mode: batch
+loader:
+  batch_size: 8000
+  num_workers: 8
+
+splitter:
+  split_path: ${paths.data_dir}/op3_split.csv

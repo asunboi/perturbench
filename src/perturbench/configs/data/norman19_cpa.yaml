@@ -1,0 +1,30 @@
+defaults:
+  - transform: linear_model_pipeline_controls
+  - splitter: saved
+  - evaluation: default
+  - prediction: default
+
+_target_: data.modules.AnnDataLitModule
+data:
+  filename: ${paths.data_dir}/norman19_cpa_hvg_normalized_curated.h5ad
+
+data_iter_factory:
+  _target_: data.datasets.SingleCellPerturbationWithControls.from_anndata
+  _partial_: True
+  perturbation_key: condition
+  perturbation_combination_delimiter: +
+  covariate_keys: [cell_type]
+  perturbation_control_value: control
+  embedding_key: null
+  feature_filter_path: null
+
+mode: batch
+loader:
+  batch_size: 4096
+  num_workers: 8
+
+splitter:
+  split_path: ${paths.data_dir}/norman19_cpa_hvg_normalized_splits/split_6.csv
+
+evaluation:
+  split_value_to_evaluate: test

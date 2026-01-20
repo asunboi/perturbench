@@ -123,7 +123,12 @@ class PerturbationDataSplitter:
         batch_key: str | None = None,
         perturbation_combination_delimiter: str = "+",
     ):
-        """Initialize PerturbationDataSplitter object."""
+        """Initialize PerturbationDataSplitter object.
+
+        Note:
+            This class may modify the input obs_dataframe in-place when
+            covariate_keys is None (adds a 'dummy_cov' column).
+        """
         self.obs_dataframe = obs_dataframe
         self.perturbation_key = perturbation_key
 

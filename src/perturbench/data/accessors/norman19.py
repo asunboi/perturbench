@@ -14,7 +14,7 @@ class Norman19(Accessor):
     def __init__(self, data_cache_dir="../perturbench_data"):
         super().__init__(
             data_cache_dir=data_cache_dir,
-            dataset_hf_url="https://huggingface.co/datasets/altoslabs/perturbench/resolve/main/norman19_preprocessed.h5ad.gz",
+            dataset_hf_url="https://huggingface.co/datasets/altoslabs/perturbench/resolve/main/norman19_processed.h5ad.gz",
             dataset_orig_url="https://zenodo.org/records/7041849/files/NormanWeissman2019_filtered.h5ad?download=1",
             dataset_name="norman19",
         )
