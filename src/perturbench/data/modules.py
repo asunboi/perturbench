@@ -197,7 +197,7 @@ class AnnDataLitModule(L.LightningDataModule):
                     warnings.warn(
                         f"{split} dataset is missing covariates from train dataset."
                     )
-
+                    
     def train_dataloader(self) -> DataLoader:
         if self.batch_sample:
             return batch_dataloader(
